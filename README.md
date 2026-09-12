@@ -17,6 +17,8 @@ exactly like upstream.
 | `rssi_threshold` | Drop advertisements weaker than N dBm (default `-127` = forward everything) |
 | `irks` | Drop Resolvable Private Addresses that resolve to none of the listed Identity Resolving Keys — i.e. other people's phones and watches |
 | `mac_allowlist` | Always forward these addresses, bypassing every filter including RSSI |
+| `manufacturer_blocklist` | Drop advertisements carrying these Bluetooth SIG company identifiers (AD type `0xFF`) |
+| `name_blocklist` | Drop advertisements whose local name contains one of these substrings |
 | `allow_espressif` | Exempt Espressif-OUI addresses from the IRK test (default `true`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
@@ -39,19 +41,29 @@ bluetooth_proxy:
   allow_espressif: true
   mac_allowlist:
     - AA:BB:CC:DD:EE:FF      # a beacon that must always be forwarded
+  manufacturer_blocklist:
+    - 0x004C                 # Apple - AirPods/AirTags/neighbours' devices
   irks:
-    - !secret ble_irk_my_phone
+    - !secret ble_irk_my_phone   # ...but NOT our own Apple devices
 ```
 
 ## Filter order
 
 Cheapest test first, so an advertisement that will be dropped never reaches the AES:
 
-1. `mac_allowlist` hit → forward unconditionally
+1. `mac_allowlist` hit → **protected**, forward unconditionally
 2. RSSI below `rssi_threshold` → drop
-3. RPA that resolves to no configured IRK → drop
-4. Local name matches `name_blocklist` → drop
+3. RPA: resolves to a configured IRK → **protected**; resolves to none → drop
+4. Not protected, and the payload carries a blocklisted manufacturer id or local
+   name → drop
 5. Otherwise forward
+
+**Why steps 1 and 3 mark the advertisement "protected" rather than just letting it
+through:** a device matched by an IRK is one of yours, and your phones and watches
+advertise Apple manufacturer data. Without the protected flag, a
+`manufacturer_blocklist: [0x004C]` entry would pass them at step 3 and then discard
+them at step 4 — silently filtering out exactly the devices the IRK list exists to
+keep. The name and manufacturer checks share a single pass over the payload.
 
 ## Measured results
 
