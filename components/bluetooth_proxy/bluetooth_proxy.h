@@ -216,6 +216,25 @@ class BluetoothProxy final : public Component {
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
+  /// Address this proxy ignores entirely, everything else proceeding normally.
+  ///
+  /// Checked before mac_allowlist and before every other filter, so an entry
+  /// here cannot be overridden by a broader allow rule.
+  ///
+  /// For multi-proxy bonding conflicts: when several proxies are in range of a
+  /// device that requires bonding, only one can hold the bond cleanly and the
+  /// others cause connection thrashing. Home Assistant picks a proxy from those
+  /// reporting a device, so dropping its advertisements here takes this proxy
+  /// out of contention without turning it into a single-purpose bridge.
+  void add_blocked_mac(uint64_t addr) { this->mac_blocklist_.push_back(addr); }
+  /// Turn mac_allowlist from a bypass list into an exclusive one: nothing but
+  /// those addresses is forwarded.
+  ///
+  /// Reproduces the observable behaviour of the ESP-IDF controller whitelist
+  /// (esphome/esphome#14353) without needing it. That filters in hardware, so
+  /// where it is available it is cheaper - but it is ESP32-only, and this works
+  /// on every platform bluetooth_proxy supports.
+  void set_allowlist_exclusive(bool exclusive) { this->allowlist_exclusive_ = exclusive; }
   /// 16-bit service UUID that bypasses every filter, matched against the
   /// advertisement's service UUID lists, solicitation lists and service data.
   ///
@@ -420,6 +439,9 @@ class BluetoothProxy final : public Component {
   // Always-forward addresses, checked before any filter.
   std::vector<uint64_t> mac_allowlist_;
 
+  // Addresses this proxy ignores outright; beats every allow rule.
+  std::vector<uint64_t> mac_blocklist_;
+
   std::vector<uint16_t> service_uuid_allowlist_;
   // Compile-time 32-hex-char blobs, parsed into service_uuid128_ during setup()
   // and then dropped - same pattern as irks_hex_.
@@ -467,6 +489,7 @@ class BluetoothProxy final : public Component {
   bool allow_espressif_{true};
   bool drop_non_resolvable_{false};
   bool allow_homekit_{true};
+  bool allowlist_exclusive_{false};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   // A dropped send (full TCP buffer) would leave the API client with a stale
   // slot state forever; the cached response is current by construction, so

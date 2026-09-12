@@ -397,6 +397,17 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // This is the only point where a packet can be suppressed without it crossing
   // the network, so every filter lives here rather than downstream.
 
+  // Ignored outright, ahead of every allow rule: the point of this list is
+  // "this proxy does not handle this device", which a broader allowlist entry
+  // must not be able to override.
+  for (const uint64_t blocked : this->mac_blocklist_) {
+    if (blocked == raw.address) {
+      this->adv_dropped_++;
+      ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": blocklisted address", raw.address);
+      return;
+    }
+  }
+
   // Explicitly protected addresses bypass every filter, including the RSSI
   // threshold: these are the tracked tags, and a tag being far from *this*
   // proxy is exactly the reading the tracker needs to place it near another.
@@ -428,6 +439,14 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
     protected_addr = true;
     this->adv_allowed_service_uuid_++;
     ESP_LOGVV(TAG, "Allowing packet from %012" PRIX64 ": allowlisted service UUID", raw.address);
+  }
+
+  // Exclusive mode: the allowlist stops being a bypass and becomes the only way
+  // through. Runs after the bypass checks above have set protected_addr.
+  if (this->allowlist_exclusive_ && !protected_addr) {
+    this->adv_dropped_++;
+    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": not on the exclusive allowlist", raw.address);
+    return;
   }
 
   // Distance first, and it applies to everything else: a far-away device is not

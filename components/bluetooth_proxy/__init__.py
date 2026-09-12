@@ -69,6 +69,8 @@ CONF_IRKS = "irks"
 CONF_ALLOW_ESPRESSIF = "allow_espressif"
 CONF_NAME_BLOCKLIST = "name_blocklist"
 CONF_MAC_ALLOWLIST = "mac_allowlist"
+CONF_MAC_BLOCKLIST = "mac_blocklist"
+CONF_ALLOWLIST_EXCLUSIVE = "allowlist_exclusive"
 CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
 CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
 CONF_ALLOW_HOMEKIT = "allow_homekit"
@@ -263,6 +265,8 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
         cg.add(var.add_blocked_name(needle.lower()))
     for mac in config[CONF_MAC_ALLOWLIST]:
         cg.add(var.add_allowed_mac(mac.as_hex))
+    for mac in config[CONF_MAC_BLOCKLIST]:
+        cg.add(var.add_blocked_mac(mac.as_hex))
     for uuid in config[CONF_SERVICE_UUID_ALLOWLIST]:
         if isinstance(uuid, str):
             cg.add(var.add_allowed_service_uuid128(uuid))
@@ -271,6 +275,7 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
     for company in config[CONF_MANUFACTURER_BLOCKLIST]:
         cg.add(var.add_blocked_manufacturer(company))
     cg.add(var.set_drop_non_resolvable(config[CONF_DROP_NON_RESOLVABLE]))
+    cg.add(var.set_allowlist_exclusive(config[CONF_ALLOWLIST_EXCLUSIVE]))
     cg.add(var.set_allow_homekit(config[CONF_ALLOW_HOMEKIT]))
 
 
@@ -321,6 +326,12 @@ _COMMON_SCHEMA_KEYS = {
     # rather than the advertised name, because the devices worth protecting
     # (beacon tags) generally advertise no local name at all.
     cv.Optional(CONF_MAC_ALLOWLIST, default=[]): cv.ensure_list(cv.mac_address),
+    # Addresses this proxy ignores outright. Beats mac_allowlist and everything
+    # else - for taking one proxy out of contention for a bonded device without
+    # making it a single-purpose bridge.
+    cv.Optional(CONF_MAC_BLOCKLIST, default=[]): cv.ensure_list(cv.mac_address),
+    # Makes mac_allowlist exclusive rather than a bypass: nothing else forwards.
+    cv.Optional(CONF_ALLOWLIST_EXCLUSIVE, default=False): cv.boolean,
     # Bluetooth SIG company identifiers to discard (e.g. 0x004C Apple). Devices
     # matched by mac_allowlist or by an IRK are exempt.
     cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(cv.hex_uint16_t),
