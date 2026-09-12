@@ -19,6 +19,7 @@ exactly like upstream.
 | `mac_allowlist` | Always forward these addresses, bypassing every filter including RSSI |
 | `manufacturer_blocklist` | Drop advertisements carrying these Bluetooth SIG company identifiers (AD type `0xFF`) |
 | `name_blocklist` | Drop advertisements whose local name contains one of these substrings |
+| `drop_non_resolvable` | Drop non-resolvable private addresses — they rotate but carry no identity, so an IRK cannot resolve them and they can never be tracked (default `false`) |
 | `allow_espressif` | Exempt Espressif-OUI addresses from the IRK test (default `true`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
@@ -53,10 +54,16 @@ Cheapest test first, so an advertisement that will be dropped never reaches the 
 
 1. `mac_allowlist` hit → **protected**, forward unconditionally
 2. RSSI below `rssi_threshold` → drop
-3. RPA: resolves to a configured IRK → **protected**; resolves to none → drop
-4. Not protected, and the payload carries a blocklisted manufacturer id or local
+3. Non-resolvable private address (with `drop_non_resolvable`) → drop
+4. RPA: resolves to a configured IRK → **protected**; resolves to none → drop
+5. Not protected, and the payload carries a blocklisted manufacturer id or local
    name → drop
-5. Otherwise forward
+6. Otherwise forward
+
+Both address-class tests are guarded on `addr_type` as well as the address bits.
+That guard is load-bearing: real public OUIs exist both in the RPA bit range
+(Espressif's `4C:…`) and the non-resolvable range (`00:`, `04:`, `15:…`), and
+bit-matching alone would discard them.
 
 **Why steps 1 and 3 mark the advertisement "protected" rather than just letting it
 through:** a device matched by an IRK is one of yours, and your phones and watches
