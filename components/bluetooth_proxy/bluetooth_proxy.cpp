@@ -155,16 +155,49 @@ bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
   return false;
 }
 
+// The Bluetooth Base UUID, big-endian, with the 16-bit slot (bytes 2-3) zeroed.
+// A SIG-allocated short UUID advertised in 128-bit form is this with those two
+// bytes filled in, so a device using the long form of 0xFFF6 still matches a
+// 16-bit allowlist entry.
+static const uint8_t BT_BASE_UUID[16] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+                                         0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
+
+bool BluetoothProxy::uuid128_matches_(const uint8_t *le_bytes) const {
+  // Advertisements carry 128-bit UUIDs little-endian; flip to canonical order
+  // once, then compare.
+  uint8_t be[16];
+  for (uint8_t k = 0; k < 16; k++)
+    be[k] = le_bytes[15 - k];
+
+  for (const auto &allowed : this->service_uuid128_) {
+    if (memcmp(be, allowed.data(), 16) == 0)
+      return true;
+  }
+
+  // Long form of a SIG short UUID: everything but bytes 2-3 matches the base.
+  if (!this->service_uuid_allowlist_.empty() && memcmp(be, BT_BASE_UUID, 2) == 0 &&
+      memcmp(be + 4, BT_BASE_UUID + 4, 12) == 0) {
+    const uint16_t shortened = static_cast<uint16_t>(be[3]) | (static_cast<uint16_t>(be[2]) << 8);
+    for (const uint16_t allowed : this->service_uuid_allowlist_) {
+      if (allowed == shortened)
+        return true;
+    }
+  }
+  return false;
+}
+
 bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const {
-  // Same [length][type][payload...] walk as payload_blocked_. A 16-bit service
-  // UUID can appear in four places, and a device in pairing mode does not
-  // consistently use the same one, so all four are checked:
-  //   0x02/0x03 incomplete/complete 16-bit service UUID list (n * 2 bytes)
-  //   0x14      16-bit service solicitation list             (n * 2 bytes)
-  //   0x16      service data, 16-bit UUID                    (2 bytes + data)
-  // Only 16-bit UUIDs are matched. The transient pairing services this exists
-  // for are SIG-allocated shorts (Matter 0xFFF6); a 128-bit vendor UUID is
-  // device-specific, so allowlisting one would not generalise.
+  // Same [length][type][payload...] walk as payload_blocked_. A service UUID can
+  // appear in several places and a device in pairing mode does not consistently
+  // use one, so every form is checked:
+  //   0x02/0x03 incomplete/complete 16-bit UUID list   (n * 2 bytes)
+  //   0x14      16-bit solicitation list               (n * 2 bytes)
+  //   0x16      service data, 16-bit UUID              (2 bytes + data)
+  //   0x06/0x07 incomplete/complete 128-bit UUID list  (n * 16 bytes)
+  //   0x15      128-bit solicitation list              (n * 16 bytes)
+  //   0x21      service data, 128-bit UUID             (16 bytes + data)
+  const bool have16 = !this->service_uuid_allowlist_.empty();
+  const bool have128 = !this->service_uuid128_.empty();
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
@@ -174,13 +207,14 @@ bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
     const uint8_t type = data[i + 1];
-    if (type == 0x02 || type == 0x03 || type == 0x14 || type == 0x16) {
-      // Payload is the field minus its type byte. Service data carries exactly
-      // one UUID followed by opaque bytes; the lists carry a packed array. Both
-      // are handled by walking pairs and stopping early for service data.
-      const uint8_t payload_len = field_len - 1;
-      const uint8_t pairs = payload_len / 2;
-      const uint8_t limit = (type == 0x16) ? (pairs > 0 ? 1 : 0) : pairs;
+    // Payload is the field minus its type byte. The list types carry a packed
+    // array; the service-data types carry exactly one UUID then opaque bytes,
+    // so those stop after the first entry.
+    const uint8_t payload_len = field_len - 1;
+
+    if (have16 && (type == 0x02 || type == 0x03 || type == 0x14 || type == 0x16)) {
+      const uint8_t entries = payload_len / 2;
+      const uint8_t limit = (type == 0x16) ? (entries > 0 ? 1 : 0) : entries;
       for (uint8_t p = 0; p < limit; p++) {
         const uint16_t uuid =
             static_cast<uint16_t>(data[i + 2 + p * 2]) | (static_cast<uint16_t>(data[i + 3 + p * 2]) << 8);
@@ -190,6 +224,18 @@ bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint
         }
       }
     }
+
+    // The long form can match a 16-bit entry via the base UUID, so this arm runs
+    // whenever either list is configured.
+    if ((have128 || have16) && (type == 0x06 || type == 0x07 || type == 0x15 || type == 0x21)) {
+      const uint8_t entries = payload_len / 16;
+      const uint8_t limit = (type == 0x21) ? (entries > 0 ? 1 : 0) : entries;
+      for (uint8_t p = 0; p < limit; p++) {
+        if (this->uuid128_matches_(&data[i + 2 + p * 16]))
+          return true;
+      }
+    }
+
     i += field_len + 1;
   }
   return false;
@@ -296,11 +342,30 @@ void BluetoothProxy::setup() {
     ESP_LOGCONFIG(TAG, "Loaded %u IRK(s); unmatched RPAs will be dropped", static_cast<unsigned>(this->irks_.size()));
   }
 
-  if (!this->service_uuid_allowlist_.empty()) {
-    ESP_LOGCONFIG(TAG, "Service UUID allowlist active (%u entry/entries); matching adverts bypass every filter",
-                  static_cast<unsigned>(this->service_uuid_allowlist_.size()));
+  // Same pattern as the IRK blob: parse the compile-time hex once, then drop it
+  // so the advertisement path only ever touches the parsed vector.
+  if (!this->service_uuid128_hex_.empty()) {
+    this->service_uuid128_.reserve(this->service_uuid128_hex_.size());
+    for (const char *hex : this->service_uuid128_hex_) {
+      std::array<uint8_t, 16> uuid{};
+      // Validation already guaranteed 32 hex chars; skip anything that somehow
+      // fails to parse rather than installing a half-filled UUID.
+      if (parse_hex(hex, 32, uuid.data(), 16) == 32)
+        this->service_uuid128_.push_back(uuid);
+    }
+    this->service_uuid128_hex_.clear();
+    this->service_uuid128_hex_.shrink_to_fit();
+  }
+
+  if (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty()) {
+    ESP_LOGCONFIG(TAG, "Service UUID allowlist active (%u short, %u long); matching adverts bypass every filter",
+                  static_cast<unsigned>(this->service_uuid_allowlist_.size()),
+                  static_cast<unsigned>(this->service_uuid128_.size()));
     for (const uint16_t uuid : this->service_uuid_allowlist_)
       ESP_LOGCONFIG(TAG, "  allowing service UUID 0x%04X", uuid);
+    for (const auto &uuid : this->service_uuid128_)
+      ESP_LOGCONFIG(TAG, "  allowing service UUID %02X%02X%02X%02X-...-%02X%02X%02X%02X", uuid[0], uuid[1], uuid[2],
+                    uuid[3], uuid[12], uuid[13], uuid[14], uuid[15]);
   }
 
   // Capture the configured scan mode from YAML before any API changes
@@ -351,7 +416,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // Cost: this walks the payload, which the filters below otherwise defer to
   // last. Guarded on a non-empty allowlist so a build that does not use the
   // option keeps the original ordering and pays nothing.
-  if (!protected_addr && !this->service_uuid_allowlist_.empty() &&
+  if (!protected_addr && (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty()) &&
       this->payload_has_allowed_service_uuid_(raw.data, raw.data_len)) {
     protected_addr = true;
     this->adv_allowed_service_uuid_++;

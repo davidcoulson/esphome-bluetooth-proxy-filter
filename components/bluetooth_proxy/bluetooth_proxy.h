@@ -186,9 +186,12 @@ class BluetoothProxy final : public Component {
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
   void set_irks_hex(const char *hex) { this->irks_hex_ = hex; }
-  /// Always forward advertisements from Espressif-assigned public addresses,
-  /// bypassing the RSSI threshold, so BLE Improv provisioning still works on a
-  /// far-away ESP.
+  /// Exempt Espressif-assigned addresses from the unresolved-RPA test below.
+  /// NOTE: this does NOT bypass the RSSI threshold (an earlier version of this
+  /// comment claimed it did). It is also close to inert on its own: ESPHome
+  /// advertises on its public MAC and a public address is never an RPA, so
+  /// those advertisements never reach that test anyway. To keep a distant
+  /// unprovisioned ESP forwarded, allowlist the Improv service UUID instead.
   void set_allow_espressif(bool allow) { this->allow_espressif_ = allow; }
   /// Substring (already lowercased) matched against the advertised local name;
   /// a hit drops the advertisement.
@@ -213,6 +216,17 @@ class BluetoothProxy final : public Component {
   /// private address, so the address-type filters below would discard it and no
   /// MAC could be allowlisted ahead of time.
   void add_allowed_service_uuid(uint16_t uuid) { this->service_uuid_allowlist_.push_back(uuid); }
+  /// As add_allowed_service_uuid(), for a 128-bit (vendor) service UUID.
+  /// Takes the canonical big-endian byte order; advertisements carry these
+  /// little-endian, and the walker reverses before comparing.
+  ///
+  /// Improv Wi-Fi (00467768-6228-2272-4663-277478268000) is the case this
+  /// exists for: an unprovisioned ESP advertises it from its public Espressif
+  /// address, so the address-type tests never touch it, but the RSSI threshold
+  /// does - allow_espressif does NOT exempt it, despite what this header used
+  /// to claim. Allowlisting the UUID is what actually makes provisioning work
+  /// on a far-away board.
+  void add_allowed_service_uuid128(const char *hex) { this->service_uuid128_hex_.push_back(hex); }
 
   uint32_t get_legacy_version() const {
     if (!this->active_) {
@@ -398,6 +412,10 @@ class BluetoothProxy final : public Component {
   std::vector<uint64_t> mac_allowlist_;
 
   std::vector<uint16_t> service_uuid_allowlist_;
+  // Compile-time 32-hex-char blobs, parsed into service_uuid128_ during setup()
+  // and then dropped - same pattern as irks_hex_.
+  std::vector<const char *> service_uuid128_hex_;
+  std::vector<std::array<uint8_t, 16>> service_uuid128_;
   // Blocked Bluetooth SIG company identifiers (AD type 0xFF).
   std::vector<uint16_t> manufacturer_blocklist_;
 
@@ -421,6 +439,9 @@ class BluetoothProxy final : public Component {
   /// Walks the same length/type/value structures looking for any allowlisted
   /// 16-bit service UUID. Only called when service_uuid_allowlist_ is non-empty.
   bool payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const;
+  /// One 128-bit UUID from an advertisement (little-endian, as transmitted)
+  /// against the long allowlist, and against the short one via the Base UUID.
+  bool uuid128_matches_(const uint8_t *le_bytes) const;
 
   // BLE advertisement batching
   api::BluetoothLERawAdvertisementsResponse response_;

@@ -90,6 +90,26 @@ def _validate_irk(value):
     if any(c not in "0123456789abcdef" for c in stripped):
         raise cv.Invalid("IRK must be hexadecimal")
     return stripped
+def _validate_service_uuid(value):
+    """A service UUID to allowlist: either a 16-bit short or a full 128-bit UUID.
+
+    Returns either an int (short) or a 32-char lowercase hex string (long), and
+    the codegen dispatches on the type. A 128-bit UUID written in its Base-UUID
+    long form is NOT folded to a short here - the C++ side compares against the
+    base at match time, so both spellings work either way.
+    """
+    if isinstance(value, int):
+        return cv.hex_uint16_t(value)
+    text = cv.string_strict(value).strip()
+    stripped = text.replace("-", "").replace(":", "").replace(" ", "").lower()
+    if len(stripped) == 32:
+        if any(c not in "0123456789abcdef" for c in stripped):
+            raise cv.Invalid("128-bit service UUID must be hexadecimal")
+        return stripped
+    # Anything else: let the 16-bit validator produce the error message.
+    return cv.hex_uint16_t(value)
+
+
 DEFAULT_CONNECTION_SLOTS = 3
 
 bluetooth_proxy_ns = cg.esphome_ns.namespace("bluetooth_proxy")
@@ -243,7 +263,10 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
     for mac in config[CONF_MAC_ALLOWLIST]:
         cg.add(var.add_allowed_mac(mac.as_hex))
     for uuid in config[CONF_SERVICE_UUID_ALLOWLIST]:
-        cg.add(var.add_allowed_service_uuid(uuid))
+        if isinstance(uuid, str):
+            cg.add(var.add_allowed_service_uuid128(uuid))
+        else:
+            cg.add(var.add_allowed_service_uuid(uuid))
     for company in config[CONF_MANUFACTURER_BLOCKLIST]:
         cg.add(var.add_blocked_manufacturer(company))
     cg.add(var.set_drop_non_resolvable(config[CONF_DROP_NON_RESOLVABLE]))
@@ -308,8 +331,10 @@ _COMMON_SCHEMA_KEYS = {
     # which drop_non_resolvable and the IRK test would otherwise discard.
     # Empty by default, which keeps upstream behaviour and the cheaper filter
     # ordering (the payload walk is skipped entirely when unused).
+    # Accepts 16-bit shorts (0xFFF6) and full 128-bit UUIDs
+    # ("00467768-6228-2272-4663-277478268000", Improv Wi-Fi).
     cv.Optional(CONF_SERVICE_UUID_ALLOWLIST, default=[]): cv.ensure_list(
-        cv.hex_uint16_t
+        _validate_service_uuid
     ),
 }
 

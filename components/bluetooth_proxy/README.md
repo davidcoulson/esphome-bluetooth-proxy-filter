@@ -57,13 +57,33 @@ unless configured.**
 > `drop_non_resolvable`, `manufacturer_blocklist` and `mac_allowlist` filters. Treat the source as
 > authoritative; `on_raw_advertisement_()` has the filter chain in order.
 
-16-bit service UUIDs that bypass **every** filter, including the address-type tests:
+Service UUIDs that bypass **every** filter, including the address-type tests and the RSSI
+threshold. Accepts 16-bit shorts and full 128-bit UUIDs:
 
 ```yaml
 bluetooth_proxy:
   service_uuid_allowlist:
-    - 0xFFF6   # Matter commissioning
+    - 0xFFF6                                   # Matter commissioning
+    - "00467768-6228-2272-4663-277478268000"   # Improv Wi-Fi
 ```
+
+The two entries are there for **different** reasons, which is worth understanding before adding more:
+
+| | Matter `0xFFF6` | Improv |
+|---|---|---|
+| Address | Rotating private | Public (Espressif OUI) |
+| Blocked by address-type tests? | **Yes** — this is the only way through | No |
+| Blocked by RSSI threshold? | Yes, when far | **Yes** — the only real exposure |
+
+`allow_espressif` does **not** rescue Improv: it is consulted only in the unresolved-RPA test, never
+in the RSSI check. An earlier version of the `set_allow_espressif()` doc comment claimed otherwise;
+it was wrong and has been corrected.
+
+**Adding more UUIDs is usually unnecessary.** Anything advertising from a public or static-random
+address already passes every address-type filter untouched, so it needs no entry unless it is also
+routinely heard below the RSSI threshold. Resist adding high-volume public services
+(`0xFD6F` exposure notification, `0xFE2C` Fast Pair) — they would defeat the filtering wholesale for
+no benefit, since those devices are not ones being paired to Home Assistant.
 
 **Why it cannot be done with `mac_allowlist`.** A device in pairing mode advertises from a rotating
 private address, so `drop_non_resolvable: true` or the unresolved-RPA test discards it before
@@ -79,11 +99,13 @@ as the pairing does.
 non-empty list, so a build that does not set the option keeps the original ordering and pays
 nothing.
 
-**Matched AD types** — all four, because a device in pairing mode does not consistently use one:
-`0x02`/`0x03` (incomplete/complete 16-bit UUID list), `0x14` (16-bit solicitation), `0x16` (service
-data, 16-bit UUID). 128-bit UUIDs are not matched: the transient pairing services this targets are
-SIG-allocated shorts, and a vendor 128-bit UUID is device-specific so allowlisting one would not
-generalise.
+**Matched AD types** — every form, because a device in pairing mode does not consistently use one:
+`0x02`/`0x03` (16-bit UUID list), `0x14` (16-bit solicitation), `0x16` (16-bit service data),
+`0x06`/`0x07` (128-bit list), `0x15` (128-bit solicitation), `0x21` (128-bit service data).
+
+128-bit UUIDs are transmitted little-endian and are reversed before comparison; entries are written
+in canonical order. A SIG short advertised in its **Base-UUID long form**
+(`0000FFF6-0000-1000-8000-00805F9B34FB`) still matches a 16-bit entry, so either spelling works.
 
 **Verifying it fired.** `get_adv_allowed_service_uuid()` counts advertisements forwarded *only*
 because of this list. It sits at zero while nothing is pairing, so any movement is direct evidence
