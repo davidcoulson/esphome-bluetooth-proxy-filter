@@ -178,6 +178,10 @@ class BluetoothProxy final : public Component {
   /// IRK. Tracked separately because it answers a different question - how
   /// much of the noise is untrackable phones rather than distant devices.
   uint32_t get_adv_dropped_rpa() const { return this->adv_dropped_rpa_; }
+  /// Subset of get_adv_forwarded(): advertisements that reached Home Assistant
+  /// only because they carried an allowlisted service UUID. Zero while nothing
+  /// is pairing, so a non-zero reading is direct evidence the passthrough fired.
+  uint32_t get_adv_allowed_service_uuid() const { return this->adv_allowed_service_uuid_; }
 
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
@@ -200,6 +204,15 @@ class BluetoothProxy final : public Component {
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
+  /// 16-bit service UUID that bypasses every filter, matched against the
+  /// advertisement's service UUID lists, solicitation lists and service data.
+  ///
+  /// Unlike add_allowed_mac() this protects a device whose address is not known
+  /// in advance, which is the whole point: a device advertising a transient
+  /// commissioning/pairing service (Matter uses 0xFFF6) does so from a rotating
+  /// private address, so the address-type filters below would discard it and no
+  /// MAC could be allowlisted ahead of time.
+  void add_allowed_service_uuid(uint16_t uuid) { this->service_uuid_allowlist_.push_back(uuid); }
 
   uint32_t get_legacy_version() const {
     if (!this->active_) {
@@ -373,6 +386,7 @@ class BluetoothProxy final : public Component {
   uint32_t adv_forwarded_{0};
   uint32_t adv_dropped_{0};
   uint32_t adv_dropped_rpa_{0};
+  uint32_t adv_allowed_service_uuid_{0};
 
   // Identity Resolving Keys. irks_hex_ is the compile-time blob; it is parsed
   // into irks_ during setup() and then dropped.
@@ -382,6 +396,8 @@ class BluetoothProxy final : public Component {
   std::vector<const char *> name_blocklist_;
   // Always-forward addresses, checked before any filter.
   std::vector<uint64_t> mac_allowlist_;
+
+  std::vector<uint16_t> service_uuid_allowlist_;
   // Blocked Bluetooth SIG company identifiers (AD type 0xFF).
   std::vector<uint16_t> manufacturer_blocklist_;
 
@@ -402,6 +418,9 @@ class BluetoothProxy final : public Component {
   /// blocklisted manufacturer id (AD type 0xFF) or a local name (0x08/0x09)
   /// containing a blocklisted substring.
   bool payload_blocked_(const uint8_t *data, uint16_t len) const;
+  /// Walks the same length/type/value structures looking for any allowlisted
+  /// 16-bit service UUID. Only called when service_uuid_allowlist_ is non-empty.
+  bool payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const;
 
   // BLE advertisement batching
   api::BluetoothLERawAdvertisementsResponse response_;

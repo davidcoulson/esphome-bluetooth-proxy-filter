@@ -71,6 +71,7 @@ CONF_NAME_BLOCKLIST = "name_blocklist"
 CONF_MAC_ALLOWLIST = "mac_allowlist"
 CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
 CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
+CONF_SERVICE_UUID_ALLOWLIST = "service_uuid_allowlist"
 
 
 def _validate_irk(value):
@@ -241,6 +242,8 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
         cg.add(var.add_blocked_name(needle.lower()))
     for mac in config[CONF_MAC_ALLOWLIST]:
         cg.add(var.add_allowed_mac(mac.as_hex))
+    for uuid in config[CONF_SERVICE_UUID_ALLOWLIST]:
+        cg.add(var.add_allowed_service_uuid(uuid))
     for company in config[CONF_MANUFACTURER_BLOCKLIST]:
         cg.add(var.add_blocked_manufacturer(company))
     cg.add(var.set_drop_non_resolvable(config[CONF_DROP_NON_RESOLVABLE]))
@@ -298,6 +301,16 @@ _COMMON_SCHEMA_KEYS = {
     cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(cv.hex_uint16_t),
     # Off by default so an unconfigured build matches upstream behaviour.
     cv.Optional(CONF_DROP_NON_RESOLVABLE, default=False): cv.boolean,
+    # 16-bit service UUIDs that bypass every filter, including the address-type
+    # tests above. The companion to mac_allowlist for devices whose address is
+    # not knowable in advance: anything advertising a transient pairing service
+    # (Matter commissioning is 0xFFF6) does so from a rotating private address,
+    # which drop_non_resolvable and the IRK test would otherwise discard.
+    # Empty by default, which keeps upstream behaviour and the cheaper filter
+    # ordering (the payload walk is skipped entirely when unused).
+    cv.Optional(CONF_SERVICE_UUID_ALLOWLIST, default=[]): cv.ensure_list(
+        cv.hex_uint16_t
+    ),
 }
 
 # Advertisement-only proxy on a neutral BLE hub: the hub's raw-advertisement

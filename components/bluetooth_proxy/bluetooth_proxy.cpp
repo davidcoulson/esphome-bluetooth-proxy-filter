@@ -155,6 +155,46 @@ bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
   return false;
 }
 
+bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const {
+  // Same [length][type][payload...] walk as payload_blocked_. A 16-bit service
+  // UUID can appear in four places, and a device in pairing mode does not
+  // consistently use the same one, so all four are checked:
+  //   0x02/0x03 incomplete/complete 16-bit service UUID list (n * 2 bytes)
+  //   0x14      16-bit service solicitation list             (n * 2 bytes)
+  //   0x16      service data, 16-bit UUID                    (2 bytes + data)
+  // Only 16-bit UUIDs are matched. The transient pairing services this exists
+  // for are SIG-allocated shorts (Matter 0xFFF6); a 128-bit vendor UUID is
+  // device-specific, so allowlisting one would not generalise.
+  uint16_t i = 0;
+  while (i < len) {
+    const uint8_t field_len = data[i];
+    if (field_len == 0)
+      break;  // Zero length terminates the payload.
+    // Reject a structure that claims to run past the buffer (truncated packet).
+    if (static_cast<uint32_t>(i) + 1u + field_len > len)
+      break;
+    const uint8_t type = data[i + 1];
+    if (type == 0x02 || type == 0x03 || type == 0x14 || type == 0x16) {
+      // Payload is the field minus its type byte. Service data carries exactly
+      // one UUID followed by opaque bytes; the lists carry a packed array. Both
+      // are handled by walking pairs and stopping early for service data.
+      const uint8_t payload_len = field_len - 1;
+      const uint8_t pairs = payload_len / 2;
+      const uint8_t limit = (type == 0x16) ? (pairs > 0 ? 1 : 0) : pairs;
+      for (uint8_t p = 0; p < limit; p++) {
+        const uint16_t uuid =
+            static_cast<uint16_t>(data[i + 2 + p * 2]) | (static_cast<uint16_t>(data[i + 3 + p * 2]) << 8);
+        for (const uint16_t allowed : this->service_uuid_allowlist_) {
+          if (allowed == uuid)
+            return true;
+        }
+      }
+    }
+    i += field_len + 1;
+  }
+  return false;
+}
+
 bool BluetoothProxy::address_is_rpa_(uint64_t addr, uint8_t addr_type) {
   // addr_type 0 is public; a public address is never resolvable no matter what
   // its top bits look like.
@@ -256,6 +296,13 @@ void BluetoothProxy::setup() {
     ESP_LOGCONFIG(TAG, "Loaded %u IRK(s); unmatched RPAs will be dropped", static_cast<unsigned>(this->irks_.size()));
   }
 
+  if (!this->service_uuid_allowlist_.empty()) {
+    ESP_LOGCONFIG(TAG, "Service UUID allowlist active (%u entry/entries); matching adverts bypass every filter",
+                  static_cast<unsigned>(this->service_uuid_allowlist_.size()));
+    for (const uint16_t uuid : this->service_uuid_allowlist_)
+      ESP_LOGCONFIG(TAG, "  allowing service UUID 0x%04X", uuid);
+  }
+
   // Capture the configured scan mode from YAML before any API changes
   this->configured_scan_active_ = this->hub_->scan_active();
 
@@ -288,6 +335,27 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       protected_addr = true;
       break;
     }
+  }
+
+  // A device advertising an allowlisted service UUID is protected exactly like
+  // an allowlisted MAC. This has to run here, ahead of the address-type tests,
+  // because the case it exists for is a device in pairing mode advertising from
+  // a rotating private address: by the time those tests run the advertisement is
+  // already gone, and its address could not have been allowlisted in advance.
+  //
+  // It is deliberately placed before the RSSI test as well. A device being
+  // paired is normally close by, but a pairing window is short and
+  // user-initiated, so a missed advertisement costs a retry while the extra
+  // traffic lasts only as long as the pairing does.
+  //
+  // Cost: this walks the payload, which the filters below otherwise defer to
+  // last. Guarded on a non-empty allowlist so a build that does not use the
+  // option keeps the original ordering and pays nothing.
+  if (!protected_addr && !this->service_uuid_allowlist_.empty() &&
+      this->payload_has_allowed_service_uuid_(raw.data, raw.data_len)) {
+    protected_addr = true;
+    this->adv_allowed_service_uuid_++;
+    ESP_LOGVV(TAG, "Allowing packet from %012" PRIX64 ": allowlisted service UUID", raw.address);
   }
 
   // Distance first, and it applies to everything else: a far-away device is not

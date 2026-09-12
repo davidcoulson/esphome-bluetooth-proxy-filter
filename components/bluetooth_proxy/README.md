@@ -51,6 +51,45 @@ nothing at all in the interval, so an idle proxy is not misreported as 0%.
 Default is `-127`, which forwards everything — i.e. **identical to upstream
 unless configured.**
 
+## `service_uuid_allowlist` — pairing/commissioning passthrough
+
+> **Note:** the change table above documents only the original RSSI work and predates the IRK,
+> `drop_non_resolvable`, `manufacturer_blocklist` and `mac_allowlist` filters. Treat the source as
+> authoritative; `on_raw_advertisement_()` has the filter chain in order.
+
+16-bit service UUIDs that bypass **every** filter, including the address-type tests:
+
+```yaml
+bluetooth_proxy:
+  service_uuid_allowlist:
+    - 0xFFF6   # Matter commissioning
+```
+
+**Why it cannot be done with `mac_allowlist`.** A device in pairing mode advertises from a rotating
+private address, so `drop_non_resolvable: true` or the unresolved-RPA test discards it before
+anything can identify it — and its address is not knowable in advance, so no MAC could be
+allowlisted. Matching on the service UUID is the only handle that exists at that point.
+
+**Placement.** The check runs after `mac_allowlist` and **before** the RSSI test, so a pairing device
+is forwarded no matter how weakly it is heard. That is deliberate: a pairing window is short and
+user-initiated, so a missed advertisement costs a retry while the extra traffic lasts only as long
+as the pairing does.
+
+**Cost.** It walks the advertisement payload, which the other filters defer to last. Guarded on a
+non-empty list, so a build that does not set the option keeps the original ordering and pays
+nothing.
+
+**Matched AD types** — all four, because a device in pairing mode does not consistently use one:
+`0x02`/`0x03` (incomplete/complete 16-bit UUID list), `0x14` (16-bit solicitation), `0x16` (service
+data, 16-bit UUID). 128-bit UUIDs are not matched: the transient pairing services this targets are
+SIG-allocated shorts, and a vendor 128-bit UUID is device-specific so allowlisting one would not
+generalise.
+
+**Verifying it fired.** `get_adv_allowed_service_uuid()` counts advertisements forwarded *only*
+because of this list. It sits at zero while nothing is pairing, so any movement is direct evidence
+the passthrough did the work — which is what makes a failed commissioning attempt diagnosable
+instead of guesswork.
+
 ## Runtime tuning
 
 The YAML `rssi_threshold:` key is a compile-time fallback only. Both packages
