@@ -108,8 +108,10 @@ bool BluetoothProxy::is_espressif_oui_(uint64_t addr) {
   return false;
 }
 
-bool BluetoothProxy::name_blocked_(const uint8_t *data, uint16_t len) const {
+bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
   // AD structures are [length][type][payload...], length covering type+payload.
+  // One pass checks both the local name and the manufacturer id so a dropped
+  // advertisement is never walked twice.
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
@@ -119,6 +121,15 @@ bool BluetoothProxy::name_blocked_(const uint8_t *data, uint16_t len) const {
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
     const uint8_t type = data[i + 1];
+    // 0xFF manufacturer specific data: first two payload bytes are the
+    // Bluetooth SIG company identifier, little-endian.
+    if (type == 0xFF && field_len >= 3) {
+      const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
+      for (const uint16_t blocked : this->manufacturer_blocklist_) {
+        if (blocked == company)
+          return true;
+      }
+    }
     // 0x09 complete local name, 0x08 shortened local name.
     if ((type == 0x09 || type == 0x08) && field_len > 1) {
       const char *name = reinterpret_cast<const char *>(&data[i + 2]);
@@ -290,18 +301,26 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // address is never an RPA, so those advertisements do not reach this test
   // anyway. It only bites if an ESP is ever configured to advertise randomly.
   if (!protected_addr && !this->irks_.empty() && this->address_is_rpa_(raw.address, raw.addr_type) &&
-      !(this->allow_espressif_ && this->is_espressif_oui_(raw.address)) && !this->irk_matches_(raw.address)) {
-    this->adv_dropped_++;
-    this->adv_dropped_rpa_++;
-    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": unresolved RPA", raw.address);
-    return;
+      !(this->allow_espressif_ && this->is_espressif_oui_(raw.address))) {
+    if (this->irk_matches_(raw.address)) {
+      // One of ours. Mark it protected so the payload filters below cannot
+      // discard it - our phones and watches advertise Apple manufacturer data,
+      // which a manufacturer_blocklist entry would otherwise match.
+      protected_addr = true;
+    } else {
+      this->adv_dropped_++;
+      this->adv_dropped_rpa_++;
+      ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": unresolved RPA", raw.address);
+      return;
+    }
   }
 
-  // Named devices we have explicitly opted out of. Last because it is the only
-  // test that has to walk the payload.
-  if (!protected_addr && !this->name_blocklist_.empty() && this->name_blocked_(raw.data, raw.data_len)) {
+  // Payload-based filters last: this is the only test that has to walk the
+  // advertisement, and by here most traffic has already been rejected.
+  if (!protected_addr && (!this->name_blocklist_.empty() || !this->manufacturer_blocklist_.empty()) &&
+      this->payload_blocked_(raw.data, raw.data_len)) {
     this->adv_dropped_++;
-    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": blocklisted name", raw.address);
+    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": blocklisted name or manufacturer", raw.address);
     return;
   }
   this->adv_forwarded_++;

@@ -189,6 +189,10 @@ class BluetoothProxy final : public Component {
   /// Substring (already lowercased) matched against the advertised local name;
   /// a hit drops the advertisement.
   void add_blocked_name(const char *needle) { this->name_blocklist_.push_back(needle); }
+  /// Bluetooth SIG company identifier whose advertisements are dropped.
+  /// IRK-matched and mac_allowlist devices are exempt, so blocking e.g. Apple
+  /// does not discard our own phones.
+  void add_blocked_manufacturer(uint16_t company) { this->manufacturer_blocklist_.push_back(company); }
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
@@ -374,6 +378,8 @@ class BluetoothProxy final : public Component {
   std::vector<const char *> name_blocklist_;
   // Always-forward addresses, checked before any filter.
   std::vector<uint64_t> mac_allowlist_;
+  // Blocked Bluetooth SIG company identifiers (AD type 0xFF).
+  std::vector<uint16_t> manufacturer_blocklist_;
 
   /// True when addr is a Resolvable Private Address: a *random* address whose
   /// top two bits are 0b01. The addr_type check is essential - plenty of public
@@ -384,9 +390,10 @@ class BluetoothProxy final : public Component {
   bool irk_matches_(uint64_t addr) const;
   /// True when the address's OUI is one of Espressif's IEEE assignments.
   static bool is_espressif_oui_(uint64_t addr);
-  /// Walks the advertisement's length/type/value structures looking for a local
-  /// name (AD types 0x08/0x09) that contains a blocklisted substring.
-  bool name_blocked_(const uint8_t *data, uint16_t len) const;
+  /// Walks the advertisement's length/type/value structures once, looking for a
+  /// blocklisted manufacturer id (AD type 0xFF) or a local name (0x08/0x09)
+  /// containing a blocklisted substring.
+  bool payload_blocked_(const uint8_t *data, uint16_t len) const;
 
   // BLE advertisement batching
   api::BluetoothLERawAdvertisementsResponse response_;
