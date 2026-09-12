@@ -125,9 +125,16 @@ bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
     // Bluetooth SIG company identifier, little-endian.
     if (type == 0xFF && field_len >= 3) {
       const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
-      for (const uint16_t blocked : this->manufacturer_blocklist_) {
-        if (blocked == company)
-          return true;
+      // HomeKit accessories advertise under Apple's company id with subtype
+      // 0x06. Blocklisting Apple to kill phone/AirPods/AirTag noise would take
+      // them with it, and they carry no IRK to rescue them, so exempt HAP
+      // explicitly rather than forcing users to choose between the two.
+      const bool is_hap = this->allow_homekit_ && company == 0x004C && field_len >= 4 && data[i + 4] == 0x06;
+      if (!is_hap) {
+        for (const uint16_t blocked : this->manufacturer_blocklist_) {
+          if (blocked == company)
+            return true;
+        }
       }
     }
     // 0x09 complete local name, 0x08 shortened local name.

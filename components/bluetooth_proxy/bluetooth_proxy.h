@@ -204,6 +204,15 @@ class BluetoothProxy final : public Component {
   /// no identity at all - an IRK cannot resolve them - so they can never be
   /// tracked or reliably connected to. Off by default (upstream behaviour).
   void set_drop_non_resolvable(bool drop) { this->drop_non_resolvable_ = drop; }
+  /// Exempt HomeKit (HAP) accessory advertisements from manufacturer_blocklist.
+  ///
+  /// HAP-over-BLE accessories advertise Apple's company id (0x004C) with
+  /// subtype 0x06, so blocklisting Apple to suppress phone/AirPods/AirTag noise
+  /// also silently discards every HomeKit BLE accessory - and unlike our own
+  /// phones they have no IRK, so nothing else rescues them. On by default: the
+  /// blocklist is aimed at untrackable consumer noise, not at accessories the
+  /// user deliberately owns.
+  void set_allow_homekit(bool allow) { this->allow_homekit_ = allow; }
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
@@ -457,6 +466,7 @@ class BluetoothProxy final : public Component {
   int8_t rssi_threshold_{-127};
   bool allow_espressif_{true};
   bool drop_non_resolvable_{false};
+  bool allow_homekit_{true};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   // A dropped send (full TCP buffer) would leave the API client with a stale
   // slot state forever; the cached response is current by construction, so

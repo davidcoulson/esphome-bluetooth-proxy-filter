@@ -71,6 +71,7 @@ CONF_NAME_BLOCKLIST = "name_blocklist"
 CONF_MAC_ALLOWLIST = "mac_allowlist"
 CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
 CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
+CONF_ALLOW_HOMEKIT = "allow_homekit"
 CONF_SERVICE_UUID_ALLOWLIST = "service_uuid_allowlist"
 
 
@@ -270,6 +271,7 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
     for company in config[CONF_MANUFACTURER_BLOCKLIST]:
         cg.add(var.add_blocked_manufacturer(company))
     cg.add(var.set_drop_non_resolvable(config[CONF_DROP_NON_RESOLVABLE]))
+    cg.add(var.set_allow_homekit(config[CONF_ALLOW_HOMEKIT]))
 
 
 async def _connections_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -324,6 +326,10 @@ _COMMON_SCHEMA_KEYS = {
     cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(cv.hex_uint16_t),
     # Off by default so an unconfigured build matches upstream behaviour.
     cv.Optional(CONF_DROP_NON_RESOLVABLE, default=False): cv.boolean,
+    # Exempt HomeKit (HAP, Apple company id + subtype 0x06) from
+    # manufacturer_blocklist. On by default: blocklisting Apple for phone and
+    # AirTag noise should not silently kill HomeKit BLE accessories.
+    cv.Optional(CONF_ALLOW_HOMEKIT, default=True): cv.boolean,
     # 16-bit service UUIDs that bypass every filter, including the address-type
     # tests above. The companion to mac_allowlist for devices whose address is
     # not knowable in advance: anything advertising a transient pairing service
