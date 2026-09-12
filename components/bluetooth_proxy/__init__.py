@@ -70,6 +70,7 @@ CONF_ALLOW_ESPRESSIF = "allow_espressif"
 CONF_NAME_BLOCKLIST = "name_blocklist"
 CONF_MAC_ALLOWLIST = "mac_allowlist"
 CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
+CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
 
 
 def _validate_irk(value):
@@ -242,6 +243,7 @@ def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
         cg.add(var.add_allowed_mac(mac.as_hex))
     for company in config[CONF_MANUFACTURER_BLOCKLIST]:
         cg.add(var.add_blocked_manufacturer(company))
+    cg.add(var.set_drop_non_resolvable(config[CONF_DROP_NON_RESOLVABLE]))
 
 
 async def _connections_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -294,6 +296,8 @@ _COMMON_SCHEMA_KEYS = {
     # Bluetooth SIG company identifiers to discard (e.g. 0x004C Apple). Devices
     # matched by mac_allowlist or by an IRK are exempt.
     cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(cv.hex_uint16_t),
+    # Off by default so an unconfigured build matches upstream behaviour.
+    cv.Optional(CONF_DROP_NON_RESOLVABLE, default=False): cv.boolean,
 }
 
 # Advertisement-only proxy on a neutral BLE hub: the hub's raw-advertisement

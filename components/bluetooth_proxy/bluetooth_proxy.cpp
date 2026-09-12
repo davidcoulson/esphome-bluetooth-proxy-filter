@@ -163,6 +163,14 @@ bool BluetoothProxy::address_is_rpa_(uint64_t addr, uint8_t addr_type) {
   return (((addr >> 40) & 0xC0) == 0x40);
 }
 
+bool BluetoothProxy::address_is_non_resolvable_(uint64_t addr, uint8_t addr_type) {
+  // Same guard as address_is_rpa_: a public address is never a private one, no
+  // matter what its leading bits look like.
+  if (addr_type == 0)
+    return false;
+  return (((addr >> 40) & 0xC0) == 0x00);
+}
+
 bool BluetoothProxy::irk_matches_(uint64_t addr) const {
   // Bluetooth Core "ah": hash = e(IRK, 0-padding | prand)[low 24 bits], where
   // the RPA is prand (top 3 bytes) | hash (bottom 3 bytes).
@@ -289,6 +297,16 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
     this->adv_dropped_++;
     ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": RSSI %d dB below threshold %d dB", raw.address, raw.rssi,
               this->rssi_threshold_);
+    return;
+  }
+
+  // A non-resolvable private address rotates and carries no identity, so it can
+  // never be matched to a device - not even with an IRK. Nothing can be done
+  // with these, and each rotation looks like a brand new device downstream.
+  if (!protected_addr && this->drop_non_resolvable_ &&
+      this->address_is_non_resolvable_(raw.address, raw.addr_type)) {
+    this->adv_dropped_++;
+    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": non-resolvable private address", raw.address);
     return;
   }
 

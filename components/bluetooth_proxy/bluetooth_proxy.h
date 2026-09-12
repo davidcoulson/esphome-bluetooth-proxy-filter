@@ -193,6 +193,10 @@ class BluetoothProxy final : public Component {
   /// IRK-matched and mac_allowlist devices are exempt, so blocking e.g. Apple
   /// does not discard our own phones.
   void add_blocked_manufacturer(uint16_t company) { this->manufacturer_blocklist_.push_back(company); }
+  /// Drop non-resolvable private addresses. These rotate like an RPA but carry
+  /// no identity at all - an IRK cannot resolve them - so they can never be
+  /// tracked or reliably connected to. Off by default (upstream behaviour).
+  void set_drop_non_resolvable(bool drop) { this->drop_non_resolvable_ = drop; }
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
@@ -386,6 +390,10 @@ class BluetoothProxy final : public Component {
   /// OUIs (Espressif's 4C:xx among them) fall in that numeric range and would
   /// otherwise be misread as RPAs and discarded.
   static bool address_is_rpa_(uint64_t addr, uint8_t addr_type);
+  /// True for a *random* address whose top two bits are 0b00. The addr_type
+  /// check is essential: plenty of real public OUIs begin with a low octet
+  /// (00:, 04:, 15: ...) and would otherwise be mistaken for these.
+  static bool address_is_non_resolvable_(uint64_t addr, uint8_t addr_type);
   /// Bluetooth Core "ah" hash against every configured IRK.
   bool irk_matches_(uint64_t addr) const;
   /// True when the address's OUI is one of Espressif's IEEE assignments.
@@ -408,6 +416,7 @@ class BluetoothProxy final : public Component {
   // Signed: BLE RSSI is negative dBm. -127 forwards everything.
   int8_t rssi_threshold_{-127};
   bool allow_espressif_{true};
+  bool drop_non_resolvable_{false};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   // A dropped send (full TCP buffer) would leave the API client with a stale
   // slot state forever; the cached response is current by construction, so
