@@ -230,11 +230,27 @@ class BluetoothProxy final : public Component {
   /// matching nothing falls through to the normal manufacturer test, exactly
   /// as if the exemption were off - which is what lets one fleet-wide major
   /// exempt your own probes while every other iBeacon in range stays blocked.
+  /// Each filter carries its own RSSI limit (-127 = forward at any strength),
+  /// which OVERRIDES both rssi_threshold and rssi_floor for adverts it matches.
+  /// That is the point: probe-to-probe ranging for BLE positioning wants the
+  /// weak cross-room readings the fleet threshold exists to discard, and only
+  /// for the beacons doing the ranging.
+  /// Sentinel for "this rule brought no RSSI limit of its own". Outside the
+  /// valid -127..0 range, so it cannot collide with a real setting - unlike
+  /// -127, which means the opposite (forward at any strength).
+  static constexpr int8_t IBEACON_RSSI_INHERIT = -128;
+
   void set_allow_ibeacon(bool allow) { this->allow_ibeacon_ = allow; }
-  void add_ibeacon_major(uint16_t major) { this->ibeacon_majors_.push_back(major); }
-  void add_ibeacon_major_minor(uint16_t major, uint16_t minor) {
-    this->ibeacon_pairs_.push_back((static_cast<uint32_t>(major) << 16) | minor);
+  void set_ibeacon_any_rssi(int8_t rssi) { this->ibeacon_any_rssi_ = rssi; }
+  void add_ibeacon_major(uint16_t major, int8_t rssi) { this->ibeacon_majors_.push_back({major, rssi}); }
+  void add_ibeacon_major_minor(uint16_t major, uint16_t minor, int8_t rssi) {
+    this->ibeacon_pairs_.push_back({(static_cast<uint32_t>(major) << 16) | minor, rssi});
   }
+  /// Cheap pre-gate: the loosest limit any rule could apply. Anything weaker
+  /// than this is dropped before the categoriser runs, so a fleet that lets its
+  /// own beacons through at -127 still does not pay an AES resolve and a
+  /// payload walk for every distant advert in the neighbourhood.
+  void set_min_rssi_gate(int8_t rssi) { this->min_rssi_gate_ = rssi; }
 
   void set_rssi_mac_allowlist(int8_t rssi) { this->rssi_mac_allowlist_ = rssi; }
   void set_rssi_irk(int8_t rssi) { this->rssi_irk_ = rssi; }
@@ -520,10 +536,18 @@ class BluetoothProxy final : public Component {
   std::vector<uint64_t> mac_blocklist_;
 
   std::vector<uint16_t> service_uuid_allowlist_;
-  // Majors exempt regardless of minor.
-  std::vector<uint16_t> ibeacon_majors_;
-  // Exact (major << 16) | minor pairs.
-  std::vector<uint32_t> ibeacon_pairs_;
+  // key + its own RSSI limit. Two lists rather than one keyed union so the
+  // exact-pair lookup stays a plain uint32 compare.
+  struct IBeaconRule {
+    uint32_t key;   // major, or (major << 16) | minor
+    int8_t rssi;    // -127 = any strength
+  };
+  struct IBeaconMajorRule {
+    uint16_t key;
+    int8_t rssi;
+  };
+  std::vector<IBeaconMajorRule> ibeacon_majors_;
+  std::vector<IBeaconRule> ibeacon_pairs_;
   // Compile-time 32-hex-char blobs, parsed into service_uuid128_ during setup()
   // and then dropped - same pattern as irks_hex_.
   std::vector<const char *> service_uuid128_hex_;
@@ -548,6 +572,9 @@ class BluetoothProxy final : public Component {
   /// blocklisted manufacturer id (AD type 0xFF) or a local name (0x08/0x09)
   /// containing a blocklisted substring.
   bool payload_blocked_(const uint8_t *data, uint16_t len) const;
+  /// True when the advert is an iBeacon accepted by a configured filter;
+  /// writes that filter's RSSI limit to limit_out.
+  bool ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *limit_out) const;
   /// Walks the same length/type/value structures looking for any allowlisted
   /// 16-bit service UUID. Only called when service_uuid_allowlist_ is non-empty.
   bool payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const;
@@ -577,6 +604,8 @@ class BluetoothProxy final : public Component {
   bool drop_non_resolvable_{false};
   bool allow_homekit_{true};
   bool allow_ibeacon_{false};
+  int8_t ibeacon_any_rssi_{-127};
+  int8_t min_rssi_gate_{-127};
   bool allowlist_exclusive_{false};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   // A dropped send (full TCP buffer) would leave the API client with a stale

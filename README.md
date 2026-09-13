@@ -25,7 +25,7 @@ exactly like upstream.
 | `name_blocklist` | Drop advertisements whose local name contains one of these substrings |
 | `drop_non_resolvable` | Drop non-resolvable private addresses — they rotate but carry no identity, so an IRK cannot resolve them and they can never be tracked (default `false`) |
 | `allow_espressif` | Exempt Espressif-OUI addresses from the IRK test (default `true`) |
-| `allow_ibeacon` | Exempt iBeacons from `manufacturer_blocklist` — `true` for all, or a list of `major`/`minor` filters (default `false`) |
+| `allow_ibeacon` | Exempt iBeacons from `manufacturer_blocklist` — `true` for all, or a list of `major`/`minor`/`rssi` filters (default `false`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
 `get_adv_dropped_rpa()`) so the effect is measurable per-proxy rather than guessed.
@@ -135,6 +135,39 @@ radio range:
       minor: [3, 4, 5]         # several
     - major: 11                # whole major, any minor
 ```
+
+Each filter can carry its own `rssi`, which **overrides both `rssi_threshold`
+and `rssi_floor`** for adverts it matches:
+
+```yaml
+  allow_ibeacon:
+    - major: 1
+      rssi: -127               # our probes: forward at any strength
+    - major: 10
+      rssi: -85
+```
+
+That is the point of the feature. Probe-to-probe ranging wants exactly the weak
+cross-room readings the fleet threshold exists to discard — and only for the
+beacons doing the ranging. Everything else stays bounded.
+
+**Omitting `rssi` inherits**: the filter exempts the advert from
+`manufacturer_blocklist` and nothing else, so `rssi_threshold` and `rssi_floor`
+still apply. Omitting a value is never the most permissive setting. A bare
+`allow_ibeacon: true` behaves the same way.
+
+Note `rssi: -127` disables the internal pre-gate (see below), so prefer a real
+value like `-95` unless you genuinely want everything.
+
+### The pre-gate
+
+Every advert is measured against *some* limit, so anything weaker than the most
+permissive limit in the config is dropped before categorisation runs. That keeps
+an AES resolve and a payload walk off every distant advert in the neighbourhood
+once your own beacons are allowed through at a very low RSSI. It is computed
+automatically from `rssi_threshold`, `rssi_floor` and every per-category limit;
+a `-127` anywhere disables it, correctly — if something is allowed through at
+any strength, nothing can be rejected on RSSI alone.
 
 `minor` is nested under `major` because that is the BLE data model — a minor is
 only meaningful inside a major — and flat keys cannot express "major 1 minor 7

@@ -81,6 +81,7 @@ CONF_ALLOW_HOMEKIT = "allow_homekit"
 CONF_ALLOW_IBEACON = "allow_ibeacon"
 CONF_MAJOR = "major"
 CONF_MINOR = "minor"
+CONF_RSSI = "rssi"
 CONF_SERVICE_UUID_ALLOWLIST = "service_uuid_allowlist"
 
 
@@ -201,16 +202,31 @@ def _esp32_config_schema() -> cv.All:
 # ibeacon_major/ibeacon_minor keys because a minor is only meaningful inside a
 # major - flat keys cannot express "major 1 minor 7 AND major 10 minor 3", and
 # silently read as one global pair.
+# Mirrors BluetoothProxy::IBEACON_RSSI_INHERIT.
+_IBEACON_RSSI_INHERIT = -128
+
 _IBEACON_FILTER_SCHEMA = cv.Schema(
     {
         cv.Required(CONF_MAJOR): cv.uint16_t,
         cv.Optional(CONF_MINOR): cv.ensure_list(cv.uint16_t),
+        # This filter's own RSSI limit, overriding BOTH rssi_threshold and
+        # rssi_floor for adverts it matches. -127 forwards at any strength.
+        # Probe-to-probe ranging wants exactly the weak cross-room readings the
+        # fleet threshold exists to discard, and only for the beacons ranging.
+        # Omitted = inherit: the rule exempts the advert from
+        # manufacturer_blocklist and nothing else, so rssi_threshold and
+        # rssi_floor still apply. Set it explicitly to override them - -127
+        # forwards at any strength.
+        cv.Optional(CONF_RSSI, default=_IBEACON_RSSI_INHERIT): cv.Any(
+            cv.int_range(min=-127, max=0),
+            cv.int_range(min=_IBEACON_RSSI_INHERIT, max=_IBEACON_RSSI_INHERIT),
+        ),
     }
 )
 
 
 def _validate_allow_ibeacon(value):
-    """Accept `true`/`false` or a list of major/minor filters."""
+    """Accept `true`/`false`, or a list of major/minor filters."""
     if isinstance(value, bool):
         return value
     return cv.ensure_list(_IBEACON_FILTER_SCHEMA)(value)
@@ -309,22 +325,57 @@ def _rp2_config_schema() -> cv.All:
     return cv.All(schema, populate_connections, _validate_rssi_floor)
 
 
-def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> None:
-    """Emit the allow_ibeacon config: a bare bool, or the major/minor filters."""
+def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
+    """Emit the allow_ibeacon config; returns the RSSI limits it introduced.
+
+    The caller needs those to size the pre-gate: a rule that forwards at -127
+    means nothing can be dropped cheaply up front.
+    """
     value = config[CONF_ALLOW_IBEACON]
-    if isinstance(value, bool):
-        cg.add(var.set_allow_ibeacon(value))
-        return
+    if value is False:
+        return []
+    if value is True:
+        # A bare `true` exempts every iBeacon from the blocklist and nothing
+        # more; the distance rules still apply, same as an inheriting filter.
+        cg.add(var.set_allow_ibeacon(True))
+        cg.add(var.set_ibeacon_any_rssi(_IBEACON_RSSI_INHERIT))
+        return [_IBEACON_RSSI_INHERIT]
     # A list scopes the exemption, so the unscoped flag stays off.
     cg.add(var.set_allow_ibeacon(False))
+    limits = []
     for entry in value:
         major = entry[CONF_MAJOR]
+        rssi = entry[CONF_RSSI]
+        limits.append(rssi)
         minors = entry.get(CONF_MINOR)
         if not minors:
-            cg.add(var.add_ibeacon_major(major))
+            cg.add(var.add_ibeacon_major(major, rssi))
             continue
         for minor in minors:
-            cg.add(var.add_ibeacon_major_minor(major, minor))
+            cg.add(var.add_ibeacon_major_minor(major, minor, rssi))
+    return limits
+
+
+def _min_rssi_gate_to_code(var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]) -> None:
+    """Pre-gate at the loosest limit any rule could apply.
+
+    Every advert is measured against SOME limit, so anything weaker than the
+    most permissive of them can be dropped before the categoriser runs - which
+    is what keeps an AES resolve and a payload walk off every distant advert in
+    the neighbourhood once our own beacons are allowed through at -127.
+
+    -127 anywhere disables the gate, correctly: something is allowed through at
+    any strength, so nothing can be rejected on RSSI alone.
+    """
+    limits = [config[CONF_RSSI_THRESHOLD]]
+    # An inheriting rule contributes nothing new - it is already bounded by
+    # rssi_threshold, which is in the list.
+    limits += [r for r in ibeacon_limits if r != _IBEACON_RSSI_INHERIT]
+    for key in (CONF_RSSI_FLOOR, CONF_RSSI_MAC_ALLOWLIST, CONF_RSSI_IRK, CONF_RSSI_SERVICE_UUID):
+        limits.append(config[key])
+    # mac_allowlist with no limit of its own is bounded only by rssi_floor,
+    # which is already in the list.
+    cg.add(var.set_min_rssi_gate(-127 if -127 in limits else min(limits)))
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -597,7 +648,7 @@ async def _to_code_esp32(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _ibeacon_to_code(var, config)
+    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config))
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
@@ -622,7 +673,7 @@ async def _to_code_ble_hub(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _ibeacon_to_code(var, config)
+    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config))
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
