@@ -5,3 +5,16 @@ repos:
     hooks:
       - id: clang-format
         types_or: [c, c++]
+
+  # The filter chain is intricate enough that two bugs shipped in one day:
+  # an exemption placed after the test it was meant to bypass, and a pre-gate
+  # that disabled itself whenever a category limit was left at its default.
+  # Both were silent. These run in a second and would have caught both.
+  - repo: local
+    hooks:
+      - id: bpf-tests
+        name: bluetooth_proxy filter tests
+        entry: tests/run.sh
+        language: script
+        pass_filenames: false
+        files: ^(components/bluetooth_proxy/|tests/|tools/)

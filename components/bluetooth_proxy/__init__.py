@@ -356,42 +356,51 @@ def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
     return limits
 
 
-def _min_rssi_gate_to_code(var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]) -> None:
-    """Pre-gate at the loosest limit any rule could apply.
+def effective_gate(threshold, floor, mac_allowlist, irk, service_uuid, ibeacon_limits):
+    """The loosest RSSI limit any rule in this config could apply.
 
-    Every advert is measured against SOME limit, so anything weaker than the
-    most permissive of them can be dropped before the categoriser runs - which
-    is what keeps an AES resolve and a payload walk off every distant advert in
-    the neighbourhood once our own beacons are allowed through at -127.
+    Pure, and importable by tests, because getting it wrong is silent: the gate
+    simply stops rejecting anything and the only symptom is a busier radio.
 
-    -127 anywhere disables the gate, correctly: something is allowed through at
-    any strength, so nothing can be rejected on RSSI alone.
+    -127 on a CATEGORY key is the default and means "brought no limit of its
+    own, inherit one" - NOT "forwards everything". Feeding those raw into the
+    min() disabled the gate for every config that left a category unset, which
+    is the common case. Each category resolves to its effective bound first.
     """
-    threshold = config[CONF_RSSI_THRESHOLD]
-    floor = config[CONF_RSSI_FLOOR]
 
-    def _bound(explicit, fallback):
-        """A category's effective limit.
-
-        -127 on a category key does NOT mean "forwards everything" - it means
-        the category brought no limit of its own and inherits. Feeding the raw
-        -127 in here disabled the gate for the common case where a category is
-        simply unconfigured, which is the opposite of what it means.
-        """
+    def bound(explicit, fallback):
         return explicit if explicit != -127 else fallback
 
     limits = [
-        # DEFAULT and the inheriting categories are bounded by rssi_threshold.
-        threshold,
-        # mac_allowlist with no limit of its own is bounded only by rssi_floor.
-        _bound(config[CONF_RSSI_MAC_ALLOWLIST], floor),
-        _bound(config[CONF_RSSI_IRK], threshold),
-        _bound(config[CONF_RSSI_SERVICE_UUID], threshold),
+        threshold,                              # DEFAULT
+        bound(mac_allowlist, floor),            # MAC: floor is its only bound
+        bound(irk, threshold),
+        bound(service_uuid, threshold),
     ]
-    # An inheriting iBeacon rule is already covered by rssi_threshold above.
+    # An inheriting iBeacon rule is already covered by threshold above.
     limits += [r for r in ibeacon_limits if r != _IBEACON_RSSI_INHERIT]
     # A category bounded only by a disabled floor really is unbounded.
-    cg.add(var.set_min_rssi_gate(-127 if -127 in limits else min(limits)))
+    return -127 if -127 in limits else min(limits)
+
+
+def _min_rssi_gate_to_code(var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]) -> None:
+    """Emit the pre-gate: anything weaker than any rule's limit dies early.
+
+    Keeps an AES resolve and a payload walk off every distant advert once a
+    fleet allows its own beacons through at a low RSSI.
+    """
+    cg.add(
+        var.set_min_rssi_gate(
+            effective_gate(
+                config[CONF_RSSI_THRESHOLD],
+                config[CONF_RSSI_FLOOR],
+                config[CONF_RSSI_MAC_ALLOWLIST],
+                config[CONF_RSSI_IRK],
+                config[CONF_RSSI_SERVICE_UUID],
+                ibeacon_limits,
+            )
+        )
+    )
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:

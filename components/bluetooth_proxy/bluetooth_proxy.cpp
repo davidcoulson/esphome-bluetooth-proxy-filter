@@ -391,8 +391,7 @@ void BluetoothProxy::setup() {
   if (this->rssi_floor_ != -127)
     ESP_LOGCONFIG(TAG, "Absolute RSSI floor %d dB; applies to allowlisted devices too", this->rssi_floor_);
   if (this->allow_ibeacon_) {
-    ESP_LOGCONFIG(TAG, "All iBeacons exempt from manufacturer_blocklist (RSSI limit %d dB)",
-                  this->ibeacon_any_rssi_);
+    ESP_LOGCONFIG(TAG, "All iBeacons exempt from manufacturer_blocklist (RSSI limit %d dB)", this->ibeacon_any_rssi_);
   } else if (!this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty()) {
     for (const auto &mj : this->ibeacon_majors_)
       ESP_LOGCONFIG(TAG, "iBeacon major %u (any minor): RSSI limit %d dB", static_cast<unsigned>(mj.key), mj.rssi);
@@ -483,9 +482,9 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   //    bounded at -90.
   if (this->min_rssi_gate_ != -127 && raw.rssi < this->min_rssi_gate_) {
     this->adv_dropped_++;
-    this->adv_dropped_floor_++;
-    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": RSSI %d dB below absolute floor %d dB", raw.address, raw.rssi,
-              this->rssi_floor_);
+    this->adv_dropped_gate_++;
+    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": RSSI %d dB below pre-gate %d dB", raw.address, raw.rssi,
+              this->min_rssi_gate_);
     return;
   }
 
@@ -531,8 +530,8 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // own RSSI limit and should not be measured against the fleet threshold.
   int8_t ibeacon_limit = IBEACON_RSSI_INHERIT;
   bool ibeacon_has_limit = false;
-  if (category == CAT_DEFAULT && (this->allow_ibeacon_ || !this->ibeacon_majors_.empty() ||
-                                  !this->ibeacon_pairs_.empty()) &&
+  if (category == CAT_DEFAULT &&
+      (this->allow_ibeacon_ || !this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty()) &&
       this->ibeacon_match_(raw.data, raw.data_len, &ibeacon_limit)) {
     category = CAT_IBEACON;
     // A rule with no rssi of its own INHERITS: it only exempts the advert from
@@ -592,11 +591,12 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       break;
   }
   // rssi_floor still bounds every category that did NOT bring its own limit.
-  if (!ibeacon_has_limit && this->rssi_floor_ != -127 &&
-      (limit == -127 || this->rssi_floor_ > limit))
+  if (!ibeacon_has_limit && this->rssi_floor_ != -127 && (limit == -127 || this->rssi_floor_ > limit))
     limit = this->rssi_floor_;
   if (limit != -127 && raw.rssi < limit) {
     this->adv_dropped_++;
+    if (limit == this->rssi_floor_ && this->rssi_floor_ != -127)
+      this->adv_dropped_floor_++;
     ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": RSSI %d dB below %s limit %d dB", raw.address, raw.rssi,
               limit_name, limit);
     return;

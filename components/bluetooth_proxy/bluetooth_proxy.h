@@ -269,11 +269,16 @@ class BluetoothProxy final : public Component {
   /// only because they carried an allowlisted service UUID. Zero while nothing
   /// is pairing, so a non-zero reading is direct evidence the passthrough fired.
   uint32_t get_adv_allowed_service_uuid() const { return this->adv_allowed_service_uuid_; }
-  /// Subset of get_adv_dropped(): advertisements discarded by the rssi_floor.
-  /// Separated out because it is the only counter that can include otherwise
+  /// Subset of get_adv_dropped(): advertisements discarded because rssi_floor
+  /// was the binding limit for their category. It can include otherwise
   /// protected devices, so a rising value means a tracked tag is being cut -
-  /// which is exactly when the floor needs revisiting.
+  /// exactly when the floor needs revisiting.
   uint32_t get_adv_dropped_floor() const { return this->adv_dropped_floor_; }
+  /// Subset of get_adv_dropped(): rejected by the cheap pre-gate before
+  /// categorisation. Distinct from the floor counter - the gate is the loosest
+  /// limit in the whole config, so this is "too weak for ANY rule", not "too
+  /// weak for the floor".
+  uint32_t get_adv_dropped_gate() const { return this->adv_dropped_gate_; }
 
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
@@ -522,6 +527,7 @@ class BluetoothProxy final : public Component {
   uint32_t adv_dropped_rpa_{0};
   uint32_t adv_allowed_service_uuid_{0};
   uint32_t adv_dropped_floor_{0};
+  uint32_t adv_dropped_gate_{0};
 
   // Identity Resolving Keys. irks_hex_ is the compile-time blob; it is parsed
   // into irks_ during setup() and then dropped.
@@ -539,8 +545,8 @@ class BluetoothProxy final : public Component {
   // key + its own RSSI limit. Two lists rather than one keyed union so the
   // exact-pair lookup stays a plain uint32 compare.
   struct IBeaconRule {
-    uint32_t key;   // major, or (major << 16) | minor
-    int8_t rssi;    // -127 = any strength
+    uint32_t key;  // major, or (major << 16) | minor
+    int8_t rssi;   // -127 = any strength
   };
   struct IBeaconMajorRule {
     uint16_t key;
