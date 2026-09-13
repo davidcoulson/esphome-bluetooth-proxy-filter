@@ -367,14 +367,30 @@ def _min_rssi_gate_to_code(var: cg.MockObj, config: ConfigType, ibeacon_limits: 
     -127 anywhere disables the gate, correctly: something is allowed through at
     any strength, so nothing can be rejected on RSSI alone.
     """
-    limits = [config[CONF_RSSI_THRESHOLD]]
-    # An inheriting rule contributes nothing new - it is already bounded by
-    # rssi_threshold, which is in the list.
+    threshold = config[CONF_RSSI_THRESHOLD]
+    floor = config[CONF_RSSI_FLOOR]
+
+    def _bound(explicit, fallback):
+        """A category's effective limit.
+
+        -127 on a category key does NOT mean "forwards everything" - it means
+        the category brought no limit of its own and inherits. Feeding the raw
+        -127 in here disabled the gate for the common case where a category is
+        simply unconfigured, which is the opposite of what it means.
+        """
+        return explicit if explicit != -127 else fallback
+
+    limits = [
+        # DEFAULT and the inheriting categories are bounded by rssi_threshold.
+        threshold,
+        # mac_allowlist with no limit of its own is bounded only by rssi_floor.
+        _bound(config[CONF_RSSI_MAC_ALLOWLIST], floor),
+        _bound(config[CONF_RSSI_IRK], threshold),
+        _bound(config[CONF_RSSI_SERVICE_UUID], threshold),
+    ]
+    # An inheriting iBeacon rule is already covered by rssi_threshold above.
     limits += [r for r in ibeacon_limits if r != _IBEACON_RSSI_INHERIT]
-    for key in (CONF_RSSI_FLOOR, CONF_RSSI_MAC_ALLOWLIST, CONF_RSSI_IRK, CONF_RSSI_SERVICE_UUID):
-        limits.append(config[key])
-    # mac_allowlist with no limit of its own is bounded only by rssi_floor,
-    # which is already in the list.
+    # A category bounded only by a disabled floor really is unbounded.
     cg.add(var.set_min_rssi_gate(-127 if -127 in limits else min(limits)))
 
 
