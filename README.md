@@ -9,14 +9,18 @@ kind**, and `on_raw_advertisement_()` forwards every packet it receives. The
 `mac_address` / `service_uuid` / `manufacturer_id` options on `esp32_ble_tracker` apply
 only to its `on_ble_advertise` automation triggers and do **not** gate the proxy stream.
 
-This fork adds four options. All default to "off", so an unconfigured build behaves
+This fork adds the options below. All default to "off", so an unconfigured build behaves
 exactly like upstream.
 
 | Option | Effect |
 | --- | --- |
-| `rssi_threshold` | Drop advertisements weaker than N dBm (default `-127` = forward everything) |
+| `rssi_threshold` | RSSI limit for everything not matched by a protection category (default `-127` = forward everything) |
 | `irks` | Drop Resolvable Private Addresses that resolve to none of the listed Identity Resolving Keys — i.e. other people's phones and watches |
-| `mac_allowlist` | Always forward these addresses, bypassing every filter including RSSI |
+| `mac_allowlist` | Always forward these addresses, bypassing the per-category RSSI limits below |
+| `rssi_floor` | Absolute reception limit applied to **every** advertisement, allowlisted ones included, before anything is categorised (default `-127` = off) |
+| `rssi_mac_allowlist` | RSSI limit for `mac_allowlist` hits (default `-127` = bounded only by `rssi_floor`) |
+| `rssi_irk` | RSSI limit for IRK-matched devices (default `-127` = inherit `rssi_threshold`) |
+| `rssi_service_uuid` | RSSI limit for `service_uuid_allowlist` hits (default `-127` = inherit `rssi_threshold`) |
 | `manufacturer_blocklist` | Drop advertisements carrying these Bluetooth SIG company identifiers (AD type `0xFF`) |
 | `name_blocklist` | Drop advertisements whose local name contains one of these substrings |
 | `drop_non_resolvable` | Drop non-resolvable private addresses — they rotate but carry no identity, so an IRK cannot resolve them and they can never be tracked (default `false`) |
@@ -38,7 +42,8 @@ external_components:
 bluetooth_proxy:
   id: ble_proxy
   active: true
-  rssi_threshold: -85
+  rssi_threshold: -75
+  rssi_floor: -90          # bounds mac_allowlist too
   allow_espressif: true
   mac_allowlist:
     - AA:BB:CC:DD:EE:FF      # a beacon that must always be forwarded
@@ -50,27 +55,55 @@ bluetooth_proxy:
 
 ## Filter order
 
-Cheapest test first, so an advertisement that will be dropped never reaches the AES:
+An advertisement is **categorised first**, then measured against that category's own
+RSSI limit. This is what makes the limits independent: any category can be looser or
+stricter than any other.
 
-1. `mac_allowlist` hit → **protected**, forward unconditionally
-2. RSSI below `rssi_threshold` → drop
-3. Non-resolvable private address (with `drop_non_resolvable`) → drop
-4. RPA: resolves to a configured IRK → **protected**; resolves to none → drop
-5. Not protected, and the payload carries a blocklisted manufacturer id or local
-   name → drop
-6. Otherwise forward
+1. `mac_blocklist` hit → drop, ahead of every allow rule
+2. RSSI below `rssi_floor` → drop. Global, applies to allowlisted devices too
+3. Categorise, first hit wins, cheapest test first:
+   `mac_allowlist` → `MAC` · RPA resolving to an IRK → `IRK`
+   (an RPA resolving to none → drop) · allowlisted service UUID → `UUID`
+   · anything else → `DEFAULT`
+4. RSSI below **that category's** limit → drop
+5. `allowlist_exclusive` and `DEFAULT` → drop
+6. Non-resolvable private address (with `drop_non_resolvable`), unprotected → drop
+7. Blocklisted manufacturer id or local name, unprotected → drop
+8. Otherwise forward
+
+### Why a floor as well as a threshold
+
+`mac_allowlist` deliberately exempts tracked beacons from `rssi_threshold`, because a
+weak reading at one proxy is exactly what places the tag nearer another. But that
+exemption used to be unbounded: a tag heard at the receiver's noise limit was still
+forwarded, and an RSSI that far down carries no usable distance information. It does
+not help a tracker triangulate, it misleads it. `rssi_floor` bounds the exemption
+without removing it.
+
+### Ordering caveat (changed in v1.1.0)
+
+Before v1.1.0 the single `rssi_threshold` ran partway down the chain, so only
+`mac_allowlist` could be given a looser limit — IRKs and service UUIDs were resolved
+*after* the threshold had already dropped the advertisement, and their limits could
+only tighten. Categorising first fixes that, at the cost of running IRK resolution and
+the service-UUID payload walk for advertisements between `rssi_floor` and
+`rssi_threshold` that the old order discarded earlier. `rssi_floor` is the mitigation:
+cheapest test, runs first, applies to everything.
+
+An unset (`-127`) category limit **inherits**, chosen so a config that sets none of
+them behaves exactly as it did before v1.1.0: `mac_allowlist` is bounded only by
+`rssi_floor`; `irk` and `service_uuid` inherit `rssi_threshold`.
 
 Both address-class tests are guarded on `addr_type` as well as the address bits.
 That guard is load-bearing: real public OUIs exist both in the RPA bit range
 (Espressif's `4C:…`) and the non-resolvable range (`00:`, `04:`, `15:…`), and
 bit-matching alone would discard them.
 
-**Why steps 1 and 3 mark the advertisement "protected" rather than just letting it
-through:** a device matched by an IRK is one of yours, and your phones and watches
-advertise Apple manufacturer data. Without the protected flag, a
-`manufacturer_blocklist: [0x004C]` entry would pass them at step 3 and then discard
-them at step 4 — silently filtering out exactly the devices the IRK list exists to
-keep. The name and manufacturer checks share a single pass over the payload.
+**Why the categories mark the advertisement "protected":** a device matched by an IRK
+is one of yours, and your phones and watches advertise Apple manufacturer data.
+Without the protected flag, a `manufacturer_blocklist: [0x004C]` entry would discard
+exactly the devices the IRK list exists to keep. The name and manufacturer checks
+share a single pass over the payload.
 
 ## Measured results
 

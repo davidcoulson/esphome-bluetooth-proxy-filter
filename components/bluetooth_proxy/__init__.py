@@ -65,6 +65,10 @@ CONF_CONNECTION_SLOTS = "connection_slots"
 CONF_CACHE_SERVICES = "cache_services"
 CONF_CONNECTIONS = "connections"
 CONF_RSSI_THRESHOLD = "rssi_threshold"
+CONF_RSSI_FLOOR = "rssi_floor"
+CONF_RSSI_MAC_ALLOWLIST = "rssi_mac_allowlist"
+CONF_RSSI_IRK = "rssi_irk"
+CONF_RSSI_SERVICE_UUID = "rssi_service_uuid"
 CONF_IRKS = "irks"
 CONF_ALLOW_ESPRESSIF = "allow_espressif"
 CONF_NAME_BLOCKLIST = "name_blocklist"
@@ -185,7 +189,40 @@ def _esp32_config_schema() -> cv.All:
             .extend(cv.COMPONENT_SCHEMA)
         ),
         validate_connections,
+        _validate_rssi_floor,
     )
+
+
+def _validate_rssi_floor(config: ConfigType) -> ConfigType:
+    """Reject a floor stricter than the threshold it is meant to backstop.
+
+    rssi_floor runs before categorisation and applies to every advertisement;
+    every other limit is applied afterwards to one category. The floor is
+    therefore only meaningful while it is the loosest of them. A floor above a
+    category's limit would silently take over as that category's effective
+    filter, and the category limit would stop meaning anything - so fail loudly
+    rather than quietly changing behaviour.
+    """
+    floor = config.get(CONF_RSSI_FLOOR, -127)
+    threshold = config.get(CONF_RSSI_THRESHOLD, -127)
+    for key in (CONF_RSSI_MAC_ALLOWLIST, CONF_RSSI_IRK, CONF_RSSI_SERVICE_UUID):
+        limit = config.get(key, -127)
+        if limit != -127 and floor != -127 and limit < floor:
+            raise cv.Invalid(
+                f"{key} ({limit}) is below {CONF_RSSI_FLOOR} ({floor}), so it "
+                f"can never fire: the floor has already dropped anything that "
+                f"weak. Raise it above the floor, or remove it.",
+                path=[key],
+            )
+    if floor != -127 and floor > threshold:
+        raise cv.Invalid(
+            f"{CONF_RSSI_FLOOR} ({floor}) must be at or below "
+            f"{CONF_RSSI_THRESHOLD} ({threshold}): the floor is an absolute "
+            f"backstop applied ahead of the allowlists, so a floor stricter "
+            f"than the threshold would override it for every device.",
+            path=[CONF_RSSI_FLOOR],
+        )
+    return config
 
 
 def _validate_no_active(config: ConfigType) -> ConfigType:
@@ -246,7 +283,7 @@ def _rp2_config_schema() -> cv.All:
         )
         .extend(cv.COMPONENT_SCHEMA)
     )
-    return cv.All(schema, populate_connections)
+    return cv.All(schema, populate_connections, _validate_rssi_floor)
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -313,6 +350,16 @@ _GATT_HUB_SCHEMAS = {PLATFORM_RP2: _rp2_config_schema}
 _COMMON_SCHEMA_KEYS = {
     cv.GenerateID(): cv.declare_id(BluetoothProxy),
     cv.Optional(CONF_RSSI_THRESHOLD, default=-127): cv.int_range(min=-127, max=0),
+    # Absolute floor, applied before the allowlists rather than after them, so
+    # it bounds mac_allowlist / service_uuid_allowlist too. -127 disables it and
+    # is the default, keeping an unconfigured build on upstream behaviour.
+    cv.Optional(CONF_RSSI_FLOOR, default=-127): cv.int_range(min=-127, max=0),
+    # Per-category limits for the three protection categories. -127 (default)
+    # means the category is bounded only by rssi_floor, which is how the
+    # component behaved before these existed.
+    cv.Optional(CONF_RSSI_MAC_ALLOWLIST, default=-127): cv.int_range(min=-127, max=0),
+    cv.Optional(CONF_RSSI_IRK, default=-127): cv.int_range(min=-127, max=0),
+    cv.Optional(CONF_RSSI_SERVICE_UUID, default=-127): cv.int_range(min=-127, max=0),
     # Empty list = no IRK gating, so the default stays upstream behaviour.
     cv.Optional(CONF_IRKS, default=[]): cv.ensure_list(_validate_irk),
     cv.Optional(CONF_ALLOW_ESPRESSIF, default=True): cv.boolean,
@@ -370,6 +417,7 @@ _BLE_HUB_CONFIG_SCHEMA = cv.All(
     )
     .extend(cv.COMPONENT_SCHEMA),
     _validate_no_active,
+    _validate_rssi_floor,
 )
 
 
@@ -468,6 +516,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ACTIVE): cv.boolean,
             cv.Optional(CONF_CACHE_SERVICES): cv.boolean,
             cv.Optional(CONF_RSSI_THRESHOLD): cv.int_range(min=-127, max=0),
+            cv.Optional(CONF_RSSI_FLOOR): cv.int_range(min=-127, max=0),
+            cv.Optional(CONF_RSSI_MAC_ALLOWLIST): cv.int_range(min=-127, max=0),
+            cv.Optional(CONF_RSSI_IRK): cv.int_range(min=-127, max=0),
+            cv.Optional(CONF_RSSI_SERVICE_UUID): cv.int_range(min=-127, max=0),
             # Bounded by the loosest platform cap so range walkers (the
             # device-builder field-range sync) see a real Range; the
             # per-platform schemas tighten it (1 on rp2) with their own error.
@@ -495,6 +547,10 @@ async def _to_code_esp32(config: ConfigType) -> None:
 
     cg.add(var.set_active(config[CONF_ACTIVE]))
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
+    cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
+    cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
+    cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
+    cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
     tracker = await cg.get_variable(config[esp32_ble_tracker.CONF_ESP32_BLE_ID])
     cg.add(var.set_ble_hub(tracker))
@@ -515,6 +571,10 @@ async def _to_code_ble_hub(config: ConfigType) -> None:
 
     cg.add(var.set_active(config[CONF_ACTIVE]))
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
+    cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
+    cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
+    cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
+    cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
     hub = await cg.get_variable(config[ble_device_base.CONF_BLE_HUB_ID])
     cg.add(var.set_ble_hub(hub))

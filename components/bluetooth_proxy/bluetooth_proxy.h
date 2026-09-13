@@ -163,11 +163,56 @@ class BluetoothProxy final : public Component {
   void set_active(bool active) { this->active_ = active; }
   bool has_active() { return this->active_; }
 
+  /// The limit for the DEFAULT category - everything not matched by the MAC
+  /// allowlist, an IRK, or an allowlisted service UUID. Also what the irk and
+  /// service_uuid categories inherit when their own limit is unset.
   /// Advertisements weaker than this are dropped before they are queued for the
   /// API, so they never reach the network. -127 (the default) forwards
   /// everything, matching upstream behaviour.
   void set_rssi_threshold(int8_t rssi) { this->rssi_threshold_ = rssi; }
   int8_t get_rssi_threshold() const { return this->rssi_threshold_; }
+
+  /// Absolute reception floor, applied to EVERY advertisement including ones
+  /// mac_allowlist / service_uuid_allowlist would otherwise protect. Where
+  /// rssi_threshold answers "is this close enough to be interesting", this
+  /// answers "is this reading usable at all" - below it the RSSI is dominated
+  /// by noise and a tracker would only be misled by it.
+  ///
+  /// Ordering matters: this runs BEFORE the allowlist bypasses are evaluated,
+  /// which is the whole point - an allowlisted tag heard at -100 dBm is still
+  /// dropped. -127 (the default) disables the floor entirely, matching the
+  /// behaviour of every build before this option existed.
+  ///
+  /// NOTE: the floor also caps the useful range of rssi_threshold. Setting a
+  /// threshold weaker (more negative) than the floor has no effect, because
+  /// the floor has already discarded those advertisements.
+  void set_rssi_floor(int8_t rssi) { this->rssi_floor_ = rssi; }
+  int8_t get_rssi_floor() const { return this->rssi_floor_; }
+
+  /// Per-category RSSI limits. Every advertisement is categorised first (MAC
+  /// allowlist / IRK match / allowlisted service UUID / everything else) and
+  /// then measured against that category's own limit, so all four are fully
+  /// independent - any one can be looser or stricter than any other.
+  ///
+  /// -127 (the default) means INHERIT, and what it inherits reproduces
+  /// pre-v1.1.0 behaviour exactly for a config that sets none of these:
+  ///   mac_allowlist  -> no limit beyond rssi_floor (it has always been a full
+  ///                     bypass of rssi_threshold)
+  ///   irk            -> rssi_threshold (they were resolved after it ran, so it
+  ///   service_uuid      always applied to them)
+  ///
+  /// The categories want different distances. Beacon tags (mac_allowlist) are
+  /// the reason the bypass exists: a weak reading at one proxy is exactly what
+  /// places the tag nearer another, so they want the loosest limit. Phones
+  /// (irks) are tracked the same way but are far chattier. A device in pairing
+  /// mode (service_uuid_allowlist) is in your hand, so it can afford the
+  /// strictest limit of the three.
+  ///
+  /// rssi_floor still bounds all of them - a category limit cannot loosen past
+  /// it, and configuration validation rejects one that tries.
+  void set_rssi_mac_allowlist(int8_t rssi) { this->rssi_mac_allowlist_ = rssi; }
+  void set_rssi_irk(int8_t rssi) { this->rssi_irk_ = rssi; }
+  void set_rssi_service_uuid(int8_t rssi) { this->rssi_service_uuid_ = rssi; }
 
   /// Advertisement counters, for measuring what rssi_threshold actually costs.
   /// Free-running and never reset: unsigned wraparound is well defined, so a
@@ -182,6 +227,11 @@ class BluetoothProxy final : public Component {
   /// only because they carried an allowlisted service UUID. Zero while nothing
   /// is pairing, so a non-zero reading is direct evidence the passthrough fired.
   uint32_t get_adv_allowed_service_uuid() const { return this->adv_allowed_service_uuid_; }
+  /// Subset of get_adv_dropped(): advertisements discarded by the rssi_floor.
+  /// Separated out because it is the only counter that can include otherwise
+  /// protected devices, so a rising value means a tracked tag is being cut -
+  /// which is exactly when the floor needs revisiting.
+  uint32_t get_adv_dropped_floor() const { return this->adv_dropped_floor_; }
 
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
@@ -429,6 +479,7 @@ class BluetoothProxy final : public Component {
   uint32_t adv_dropped_{0};
   uint32_t adv_dropped_rpa_{0};
   uint32_t adv_allowed_service_uuid_{0};
+  uint32_t adv_dropped_floor_{0};
 
   // Identity Resolving Keys. irks_hex_ is the compile-time blob; it is parsed
   // into irks_ during setup() and then dropped.
@@ -486,6 +537,12 @@ class BluetoothProxy final : public Component {
   bool active_;
   // Signed: BLE RSSI is negative dBm. -127 forwards everything.
   int8_t rssi_threshold_{-127};
+  // Absolute floor applied ahead of every allow rule. -127 disables it.
+  int8_t rssi_floor_{-127};
+  // Per-category limits; -127 means "no limit beyond rssi_floor_".
+  int8_t rssi_mac_allowlist_{-127};
+  int8_t rssi_irk_{-127};
+  int8_t rssi_service_uuid_{-127};
   bool allow_espressif_{true};
   bool drop_non_resolvable_{false};
   bool allow_homekit_{true};
