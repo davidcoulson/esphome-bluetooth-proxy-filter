@@ -210,6 +210,32 @@ class BluetoothProxy final : public Component {
   ///
   /// rssi_floor still bounds all of them - a category limit cannot loosen past
   /// it, and configuration validation rejects one that tries.
+  /// Exempt iBeacon advertisements (Apple company id, subtype 0x02) from
+  /// manufacturer_blocklist, the same way allow_homekit exempts HAP. Needed
+  /// whenever 0x004C is blocklisted and something you care about advertises an
+  /// iBeacon - notably ESPHome proxies beaconing for BLE positioning
+  /// self-calibration, which advertise from a public Espressif MAC and so have
+  /// no IRK to protect them.
+  ///
+  /// Two scopes, mirroring the YAML:
+  ///   allow_ibeacon: true   -> set_allow_ibeacon(true), every iBeacon exempt
+  ///   allow_ibeacon: [...]  -> the major/minor filters added below
+  ///
+  /// A filter is either a whole major (add_ibeacon_major) or an exact
+  /// major/minor pair (add_ibeacon_major_minor). Stored flat rather than as a
+  /// vector-of-vectors: a pair packs into one uint32 and the lists run to a
+  /// handful of entries, so a linear scan beats the allocations.
+  ///
+  /// These NARROW the exemption; they never add a drop rule. An iBeacon
+  /// matching nothing falls through to the normal manufacturer test, exactly
+  /// as if the exemption were off - which is what lets one fleet-wide major
+  /// exempt your own probes while every other iBeacon in range stays blocked.
+  void set_allow_ibeacon(bool allow) { this->allow_ibeacon_ = allow; }
+  void add_ibeacon_major(uint16_t major) { this->ibeacon_majors_.push_back(major); }
+  void add_ibeacon_major_minor(uint16_t major, uint16_t minor) {
+    this->ibeacon_pairs_.push_back((static_cast<uint32_t>(major) << 16) | minor);
+  }
+
   void set_rssi_mac_allowlist(int8_t rssi) { this->rssi_mac_allowlist_ = rssi; }
   void set_rssi_irk(int8_t rssi) { this->rssi_irk_ = rssi; }
   void set_rssi_service_uuid(int8_t rssi) { this->rssi_service_uuid_ = rssi; }
@@ -494,6 +520,10 @@ class BluetoothProxy final : public Component {
   std::vector<uint64_t> mac_blocklist_;
 
   std::vector<uint16_t> service_uuid_allowlist_;
+  // Majors exempt regardless of minor.
+  std::vector<uint16_t> ibeacon_majors_;
+  // Exact (major << 16) | minor pairs.
+  std::vector<uint32_t> ibeacon_pairs_;
   // Compile-time 32-hex-char blobs, parsed into service_uuid128_ during setup()
   // and then dropped - same pattern as irks_hex_.
   std::vector<const char *> service_uuid128_hex_;
@@ -546,6 +576,7 @@ class BluetoothProxy final : public Component {
   bool allow_espressif_{true};
   bool drop_non_resolvable_{false};
   bool allow_homekit_{true};
+  bool allow_ibeacon_{false};
   bool allowlist_exclusive_{false};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   // A dropped send (full TCP buffer) would leave the API client with a stale

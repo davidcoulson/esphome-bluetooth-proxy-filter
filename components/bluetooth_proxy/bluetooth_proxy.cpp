@@ -104,7 +104,51 @@ bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
       // them with it, and they carry no IRK to rescue them, so exempt HAP
       // explicitly rather than forcing users to choose between the two.
       const bool is_hap = this->allow_homekit_ && company == 0x004C && field_len >= 4 && data[i + 4] == 0x06;
-      if (!is_hap) {
+      // iBeacon is Apple manufacturer data with subtype 0x02, so a
+      // manufacturer_blocklist entry for 0x004C (added for AirPods/AirTag
+      // noise) silently takes every iBeacon with it - including ESPHome
+      // proxies advertising one for BLE positioning self-calibration, which
+      // advertise from their public Espressif MAC and so carry no IRK to
+      // rescue them.
+      //
+      // Layout, indices relative to the length byte at data[i]:
+      //   i+1  0xFF          i+2..3  company (LE)   i+4  subtype 0x02
+      //   i+5  0x15          i+6..21 UUID (16)      i+22..23 major (BE)
+      //   i+24..25 minor (BE)                       i+26 measured power
+      // field_len covers type+payload, so a complete iBeacon is 26.
+      //
+      // The filters NARROW the exemption rather than adding a blocklist: an
+      // iBeacon matching none of them falls through to the manufacturer test
+      // below, exactly as if the exemption were off. That is what lets one
+      // fleet-wide major exempt your own probes while every other iBeacon in
+      // range stays blocked, with no MAC list to maintain.
+      bool is_ibeacon = false;
+      if (company == 0x004C && field_len >= 4 && data[i + 4] == 0x02) {
+        if (this->allow_ibeacon_) {
+          is_ibeacon = true;  // Unscoped: every iBeacon is exempt.
+        } else if (field_len >= 26 && (!this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty())) {
+          // Only a complete iBeacon carries major/minor, so a truncated one
+          // cannot be matched against a filter and stays unexempted.
+          const uint16_t major = (static_cast<uint16_t>(data[i + 22]) << 8) | data[i + 23];
+          const uint16_t minor = (static_cast<uint16_t>(data[i + 24]) << 8) | data[i + 25];
+          for (const uint16_t m : this->ibeacon_majors_) {
+            if (m == major) {
+              is_ibeacon = true;
+              break;
+            }
+          }
+          if (!is_ibeacon) {
+            const uint32_t want = (static_cast<uint32_t>(major) << 16) | minor;
+            for (const uint32_t p : this->ibeacon_pairs_) {
+              if (p == want) {
+                is_ibeacon = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (!is_hap && !is_ibeacon) {
         for (const uint16_t blocked : this->manufacturer_blocklist_) {
           if (blocked == company)
             return true;
@@ -337,6 +381,15 @@ void BluetoothProxy::setup() {
 
   if (this->rssi_floor_ != -127)
     ESP_LOGCONFIG(TAG, "Absolute RSSI floor %d dB; applies to allowlisted devices too", this->rssi_floor_);
+  if (this->allow_ibeacon_) {
+    ESP_LOGCONFIG(TAG, "All iBeacons exempt from manufacturer_blocklist");
+  } else if (!this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty()) {
+    for (const uint16_t m : this->ibeacon_majors_)
+      ESP_LOGCONFIG(TAG, "iBeacon major %u exempt from manufacturer_blocklist (any minor)", static_cast<unsigned>(m));
+    for (const uint32_t p : this->ibeacon_pairs_)
+      ESP_LOGCONFIG(TAG, "iBeacon major %u minor %u exempt from manufacturer_blocklist", static_cast<unsigned>(p >> 16),
+                    static_cast<unsigned>(p & 0xFFFF));
+  }
   if (this->rssi_mac_allowlist_ != -127)
     ESP_LOGCONFIG(TAG, "  mac_allowlist RSSI limit %d dB", this->rssi_mac_allowlist_);
   if (this->rssi_irk_ != -127)

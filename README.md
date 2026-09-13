@@ -25,6 +25,7 @@ exactly like upstream.
 | `name_blocklist` | Drop advertisements whose local name contains one of these substrings |
 | `drop_non_resolvable` | Drop non-resolvable private addresses — they rotate but carry no identity, so an IRK cannot resolve them and they can never be tracked (default `false`) |
 | `allow_espressif` | Exempt Espressif-OUI addresses from the IRK test (default `true`) |
+| `allow_ibeacon` | Exempt iBeacons from `manufacturer_blocklist` — `true` for all, or a list of `major`/`minor` filters (default `false`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
 `get_adv_dropped_rpa()`) so the effect is measurable per-proxy rather than guessed.
@@ -104,6 +105,50 @@ is one of yours, and your phones and watches advertise Apple manufacturer data.
 Without the protected flag, a `manufacturer_blocklist: [0x004C]` entry would discard
 exactly the devices the IRK list exists to keep. The name and manufacturer checks
 share a single pass over the payload.
+
+## Exempting iBeacons
+
+iBeacon is Apple manufacturer data with subtype `0x02`, so a
+`manufacturer_blocklist: [0x004C]` entry — the usual way to kill AirPods, AirTag
+and neighbour noise — silently takes **every iBeacon** with it. `allow_homekit`
+does not help: that exempts subtype `0x06`.
+
+This matters if you run [BPS](https://github.com/Hogster/BPS) receiver
+auto-calibration, where each ESPHome probe advertises an iBeacon so its siblings
+can range it. Those adverts come from the probe's public Espressif MAC, so they
+carry no IRK and nothing else rescues them.
+
+```yaml
+bluetooth_proxy:
+  manufacturer_blocklist: [0x004C]
+  allow_ibeacon: true          # every iBeacon exempt
+```
+
+Scope it to your own beacons instead of opening the door to every iBeacon in
+radio range:
+
+```yaml
+  allow_ibeacon:
+    - major: 1
+      minor: 7                 # one probe
+    - major: 10
+      minor: [3, 4, 5]         # several
+    - major: 11                # whole major, any minor
+```
+
+`minor` is nested under `major` because that is the BLE data model — a minor is
+only meaningful inside a major — and flat keys cannot express "major 1 minor 7
+**and** major 10 minor 3".
+
+The filters **narrow** the exemption; they never add a drop rule. An iBeacon
+matching none of them falls through to the normal manufacturer test, exactly as
+if the exemption were off. A truncated iBeacon carrying no major/minor cannot be
+matched, so it is not exempted when filters are in use (bare `true` still exempts
+it).
+
+Note this exempts iBeacons from the **payload** filters only. The RSSI limits
+still apply, so distant probe pairs can still be dropped — relevant for
+calibration, which wants the full pair matrix including weak through-wall links.
 
 ## Measured results
 

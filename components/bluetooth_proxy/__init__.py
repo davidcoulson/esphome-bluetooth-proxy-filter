@@ -78,6 +78,9 @@ CONF_ALLOWLIST_EXCLUSIVE = "allowlist_exclusive"
 CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
 CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
 CONF_ALLOW_HOMEKIT = "allow_homekit"
+CONF_ALLOW_IBEACON = "allow_ibeacon"
+CONF_MAJOR = "major"
+CONF_MINOR = "minor"
 CONF_SERVICE_UUID_ALLOWLIST = "service_uuid_allowlist"
 
 
@@ -193,6 +196,26 @@ def _esp32_config_schema() -> cv.All:
     )
 
 
+# One entry of the allow_ibeacon list. `minor` accepts a single value or a
+# list; omitting it exempts the whole major. Nested rather than flat
+# ibeacon_major/ibeacon_minor keys because a minor is only meaningful inside a
+# major - flat keys cannot express "major 1 minor 7 AND major 10 minor 3", and
+# silently read as one global pair.
+_IBEACON_FILTER_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_MAJOR): cv.uint16_t,
+        cv.Optional(CONF_MINOR): cv.ensure_list(cv.uint16_t),
+    }
+)
+
+
+def _validate_allow_ibeacon(value):
+    """Accept `true`/`false` or a list of major/minor filters."""
+    if isinstance(value, bool):
+        return value
+    return cv.ensure_list(_IBEACON_FILTER_SCHEMA)(value)
+
+
 def _validate_rssi_floor(config: ConfigType) -> ConfigType:
     """Reject a floor stricter than the threshold it is meant to backstop.
 
@@ -284,6 +307,24 @@ def _rp2_config_schema() -> cv.All:
         .extend(cv.COMPONENT_SCHEMA)
     )
     return cv.All(schema, populate_connections, _validate_rssi_floor)
+
+
+def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> None:
+    """Emit the allow_ibeacon config: a bare bool, or the major/minor filters."""
+    value = config[CONF_ALLOW_IBEACON]
+    if isinstance(value, bool):
+        cg.add(var.set_allow_ibeacon(value))
+        return
+    # A list scopes the exemption, so the unscoped flag stays off.
+    cg.add(var.set_allow_ibeacon(False))
+    for entry in value:
+        major = entry[CONF_MAJOR]
+        minors = entry.get(CONF_MINOR)
+        if not minors:
+            cg.add(var.add_ibeacon_major(major))
+            continue
+        for minor in minors:
+            cg.add(var.add_ibeacon_major_minor(major, minor))
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -388,6 +429,12 @@ _COMMON_SCHEMA_KEYS = {
     # manufacturer_blocklist. On by default: blocklisting Apple for phone and
     # AirTag noise should not silently kill HomeKit BLE accessories.
     cv.Optional(CONF_ALLOW_HOMEKIT, default=True): cv.boolean,
+    # iBeacon is Apple manufacturer data (subtype 0x02), so blocklisting 0x004C
+    # takes every iBeacon with it. Off by default - unlike HomeKit, an iBeacon
+    # is usually exactly the noise the blocklist is there to kill. Turn it on
+    # when something you own beacons, e.g. ESPHome proxies advertising for BLE
+    # positioning self-calibration.
+    cv.Optional(CONF_ALLOW_IBEACON, default=False): _validate_allow_ibeacon,
     # 16-bit service UUIDs that bypass every filter, including the address-type
     # tests above. The companion to mac_allowlist for devices whose address is
     # not knowable in advance: anything advertising a transient pairing service
@@ -517,6 +564,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_CACHE_SERVICES): cv.boolean,
             cv.Optional(CONF_RSSI_THRESHOLD): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_FLOOR): cv.int_range(min=-127, max=0),
+            cv.Optional(CONF_ALLOW_IBEACON): _validate_allow_ibeacon,
             cv.Optional(CONF_RSSI_MAC_ALLOWLIST): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_IRK): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_SERVICE_UUID): cv.int_range(min=-127, max=0),
@@ -549,6 +597,7 @@ async def _to_code_esp32(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
+    _ibeacon_to_code(var, config)
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
@@ -573,6 +622,7 @@ async def _to_code_ble_hub(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
+    _ibeacon_to_code(var, config)
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
