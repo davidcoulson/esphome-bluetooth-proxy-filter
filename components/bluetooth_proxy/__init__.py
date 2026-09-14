@@ -85,7 +85,7 @@ CONF_RSSI = "rssi"
 CONF_SERVICE_UUID_ALLOWLIST = "service_uuid_allowlist"
 
 
-def _validate_irk(value):
+def _validate_irk(value: str) -> str:
     """One 16-byte Identity Resolving Key, as 32 hex chars.
 
     Accepts the separator styles people paste (colons, dashes, spaces) and
@@ -101,7 +101,9 @@ def _validate_irk(value):
     if any(c not in "0123456789abcdef" for c in stripped):
         raise cv.Invalid("IRK must be hexadecimal")
     return stripped
-def _validate_service_uuid(value):
+
+
+def _validate_service_uuid(value: int | str) -> int | str:
     """A service UUID to allowlist: either a 16-bit short or a full 128-bit UUID.
 
     Returns either an int (short) or a 32-char lowercase hex string (long), and
@@ -149,7 +151,7 @@ def _esp32_config_schema() -> cv.All:
 
     CONNECTION_SCHEMA = bluetooth_connection.hub_connection_schema(PLATFORM_ESP32)
 
-    def validate_connections(config):
+    def validate_connections(config: ConfigType) -> ConfigType:
         if CONF_CONNECTIONS in config:
             if not config[CONF_ACTIVE]:
                 raise cv.Invalid(
@@ -225,7 +227,7 @@ _IBEACON_FILTER_SCHEMA = cv.Schema(
 )
 
 
-def _validate_allow_ibeacon(value):
+def _validate_allow_ibeacon(value: bool | list[ConfigType]) -> bool | list[ConfigType]:
     """Accept `true`/`false`, or a list of major/minor filters."""
     if isinstance(value, bool):
         return value
@@ -356,7 +358,14 @@ def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
     return limits
 
 
-def effective_gate(threshold, floor, mac_allowlist, irk, service_uuid, ibeacon_limits):
+def effective_gate(
+    threshold: int,
+    floor: int,
+    mac_allowlist: int,
+    irk: int,
+    service_uuid: int,
+    ibeacon_limits: list[int],
+) -> int:
     """The loosest RSSI limit any rule in this config could apply.
 
     Pure, and importable by tests, because getting it wrong is silent: the gate
@@ -368,12 +377,12 @@ def effective_gate(threshold, floor, mac_allowlist, irk, service_uuid, ibeacon_l
     is the common case. Each category resolves to its effective bound first.
     """
 
-    def bound(explicit, fallback):
+    def bound(explicit: int, fallback: int) -> int:
         return explicit if explicit != -127 else fallback
 
     limits = [
-        threshold,                              # DEFAULT
-        bound(mac_allowlist, floor),            # MAC: floor is its only bound
+        threshold,  # DEFAULT
+        bound(mac_allowlist, floor),  # MAC: floor is its only bound
         bound(irk, threshold),
         bound(service_uuid, threshold),
     ]
@@ -383,7 +392,9 @@ def effective_gate(threshold, floor, mac_allowlist, irk, service_uuid, ibeacon_l
     return -127 if -127 in limits else min(limits)
 
 
-def _min_rssi_gate_to_code(var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]) -> None:
+def _min_rssi_gate_to_code(
+    var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]
+) -> None:
     """Emit the pre-gate: anything weaker than any rule's limit dies early.
 
     Keeps an AES resolve and a payload walk off every distant advert once a
@@ -498,7 +509,9 @@ _COMMON_SCHEMA_KEYS = {
     cv.Optional(CONF_ALLOWLIST_EXCLUSIVE, default=False): cv.boolean,
     # Bluetooth SIG company identifiers to discard (e.g. 0x004C Apple). Devices
     # matched by mac_allowlist or by an IRK are exempt.
-    cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(cv.hex_uint16_t),
+    cv.Optional(CONF_MANUFACTURER_BLOCKLIST, default=[]): cv.ensure_list(
+        cv.hex_uint16_t
+    ),
     # Off by default so an unconfigured build matches upstream behaviour.
     cv.Optional(CONF_DROP_NON_RESOLVABLE, default=False): cv.boolean,
     # Exempt HomeKit (HAP, Apple company id + subtype 0x06) from

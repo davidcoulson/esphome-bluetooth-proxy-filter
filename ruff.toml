@@ -1,0 +1,15 @@
+# The isort settings esphome itself uses. Without these, a bare `ruff check`
+# reorders imports away from the layout core uses and every future re-sync
+# picks up a spurious diff. Kept minimal: only what affects how this
+# component's source is arranged, not esphome's full rule set.
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]  # line too long; esphome ignores it too
+
+[lint.isort]
+force-sort-within-sections = true
+known-first-party = ["esphome"]
+combine-as-imports = true
+split-on-trailing-comma = false

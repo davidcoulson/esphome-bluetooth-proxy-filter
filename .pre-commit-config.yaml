@@ -1,5 +1,14 @@
 # Mirrors esphome's own hook and pin, so this component formats identically to core.
 repos:
+  # Pinned to the same ruff esphome uses, reading ruff.toml's isort settings, so
+  # this component's imports stay arranged the way core arranges its own.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v13.0.1
     hooks:
