@@ -1,7 +1,14 @@
 # bluetooth_proxy (local fork)
 
 Fork of the **core** ESPHome `bluetooth_proxy` component, taken verbatim from
-tag **2026.8.2**, with one feature added: **`rssi_threshold`**.
+tag **2026.9.0**, with one feature added: **`rssi_threshold`**.
+
+Re-sync log:
+
+| Fork tag | Upstream tag | Upstream delta since previous sync |
+| --- | --- | --- |
+| v1.4.0 | 2026.9.0 | One type annotation on `validate_connections()` in `__init__.py`; `bluetooth_proxy.cpp` / `.h` unchanged. Compiled code identical to v1.3.2. |
+| v1.3.x | 2026.8.2 | initial |
 
 It is loaded via `external_components` (`type: local`, `path: components`) from
 `common/ble-proxy.yaml` and `common/ble.yaml`. ESPHome's loader inserts external
