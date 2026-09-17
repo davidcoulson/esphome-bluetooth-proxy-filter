@@ -79,6 +79,7 @@ CONF_MANUFACTURER_BLOCKLIST = "manufacturer_blocklist"
 CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
 CONF_ALLOW_HOMEKIT = "allow_homekit"
 CONF_ALLOW_IBEACON = "allow_ibeacon"
+CONF_ALLOW_FINDMY = "allow_findmy"
 CONF_MAJOR = "major"
 CONF_MINOR = "minor"
 CONF_RSSI = "rssi"
@@ -225,6 +226,37 @@ _IBEACON_FILTER_SCHEMA = cv.Schema(
         ),
     }
 )
+
+
+# allow_findmy: `true` exempts Apple FindMy (Offline Finding, subtype 0x12)
+# adverts from manufacturer_blocklist and nothing more; a mapping with `rssi`
+# gives the rule its own limit, resolved exactly like an iBeacon rule's
+# (overrides rssi_threshold and rssi_floor for the adverts it matches).
+_FINDMY_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_RSSI, default=_IBEACON_RSSI_INHERIT): cv.Any(
+            cv.int_range(min=_IBEACON_RSSI_INHERIT, max=_IBEACON_RSSI_INHERIT),
+            cv.int_range(min=-127, max=0),
+        ),
+    }
+)
+
+
+def _validate_allow_findmy(value: bool | ConfigType) -> bool | ConfigType:
+    if isinstance(value, bool):
+        return value
+    return _FINDMY_SCHEMA(value)
+
+
+def _findmy_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
+    """Emit the allow_findmy config; returns the RSSI limits it introduced."""
+    value = config.get(CONF_ALLOW_FINDMY, False)
+    if value is False:
+        return []
+    cg.add(var.set_allow_findmy(True))
+    rssi = _IBEACON_RSSI_INHERIT if value is True else value[CONF_RSSI]
+    cg.add(var.set_findmy_rssi(rssi))
+    return [rssi]
 
 
 def _validate_allow_ibeacon(value: bool | list[ConfigType]) -> bool | list[ConfigType]:
@@ -524,6 +556,7 @@ _COMMON_SCHEMA_KEYS = {
     # when something you own beacons, e.g. ESPHome proxies advertising for BLE
     # positioning self-calibration.
     cv.Optional(CONF_ALLOW_IBEACON, default=False): _validate_allow_ibeacon,
+    cv.Optional(CONF_ALLOW_FINDMY, default=False): _validate_allow_findmy,
     # 16-bit service UUIDs that bypass every filter, including the address-type
     # tests above. The companion to mac_allowlist for devices whose address is
     # not knowable in advance: anything advertising a transient pairing service
@@ -654,6 +687,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_RSSI_THRESHOLD): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_FLOOR): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_ALLOW_IBEACON): _validate_allow_ibeacon,
+            cv.Optional(CONF_ALLOW_FINDMY): _validate_allow_findmy,
             cv.Optional(CONF_RSSI_MAC_ALLOWLIST): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_IRK): cv.int_range(min=-127, max=0),
             cv.Optional(CONF_RSSI_SERVICE_UUID): cv.int_range(min=-127, max=0),
@@ -686,7 +720,7 @@ async def _to_code_esp32(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config))
+    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config) + _findmy_to_code(var, config))
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
@@ -711,7 +745,7 @@ async def _to_code_ble_hub(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config))
+    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config) + _findmy_to_code(var, config))
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)

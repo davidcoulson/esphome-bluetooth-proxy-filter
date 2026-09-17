@@ -30,6 +30,7 @@ struct Cfg {
   int8_t rssi_mac_allowlist = -127;
   int8_t rssi_irk = -127;
   int8_t rssi_service_uuid = -127;
+  int8_t findmy_rssi = IBEACON_RSSI_INHERIT;
 };
 
 // --- transcribed from BluetoothProxy::ibeacon_match_ ---
@@ -57,19 +58,37 @@ static bool ibeacon_match(const Cfg &c, const uint8_t *data, uint16_t len, int8_
   return false;
 }
 
-enum Cat { CAT_DEFAULT, CAT_MAC, CAT_IRK, CAT_UUID, CAT_IBEACON };
+// --- transcribed from BluetoothProxy::findmy_match_ ---
+static bool findmy_match(const uint8_t *data, uint16_t len) {
+  uint16_t i = 0;
+  while (i < len) {
+    const uint8_t field_len = data[i];
+    if (field_len == 0) break;
+    if (static_cast<uint32_t>(i) + 1u + field_len > len) break;
+    if (data[i + 1] == 0xFF && field_len >= 4) {
+      const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
+      if (company == 0x004C && data[i + 4] == 0x12) return true;
+    }
+    i += field_len + 1;
+  }
+  return false;
+}
+
+enum Cat { CAT_DEFAULT, CAT_MAC, CAT_IRK, CAT_UUID, CAT_IBEACON, CAT_FINDMY };
 
 // --- transcribed from the limit-resolution block of on_raw_advertisement_ ---
-static int8_t resolve_limit(const Cfg &c, Cat category, int8_t ibeacon_limit, bool ibeacon_has_limit) {
+static int8_t resolve_limit(const Cfg &c, Cat category, int8_t ibeacon_limit, bool ibeacon_has_limit,
+                            bool findmy_has_limit = false) {
   int8_t limit;
   switch (category) {
     case CAT_IBEACON: limit = ibeacon_has_limit ? ibeacon_limit : c.rssi_threshold; break;
+    case CAT_FINDMY: limit = findmy_has_limit ? c.findmy_rssi : c.rssi_threshold; break;
     case CAT_MAC:     limit = c.rssi_mac_allowlist; break;
     case CAT_IRK:     limit = c.rssi_irk != -127 ? c.rssi_irk : c.rssi_threshold; break;
     case CAT_UUID:    limit = c.rssi_service_uuid != -127 ? c.rssi_service_uuid : c.rssi_threshold; break;
     default:          limit = c.rssi_threshold; break;
   }
-  if (!ibeacon_has_limit && c.rssi_floor != -127 && (limit == -127 || c.rssi_floor > limit))
+  if (!ibeacon_has_limit && !findmy_has_limit && c.rssi_floor != -127 && (limit == -127 || c.rssi_floor > limit))
     limit = c.rssi_floor;
   return limit;
 }
@@ -165,6 +184,21 @@ int main() {
     check(resolve_limit(c, CAT_UUID, 0, false) == -75, "UUID inherits the threshold");
     check(resolve_limit(c, CAT_IBEACON, -95, true) == -95, "iBeacon explicit rssi overrides the floor");
     check(resolve_limit(c, CAT_IBEACON, -127, true) == -127, "iBeacon -127 forwards at any strength");
+    c.findmy_rssi = -85;
+    check(resolve_limit(c, CAT_FINDMY, 0, false, true) == -85, "FindMy explicit rssi overrides the floor");
+    check(resolve_limit(c, CAT_FINDMY, 0, false, false) == -75, "FindMy without rssi inherits the threshold");
+    {
+      // An AirTag: flags, then Apple manufacturer data with the Offline
+      // Finding subtype 0x12 and a status byte + 22 key bytes.
+      uint8_t airtag[31] = {0x02, 0x01, 0x1A, 0x1B, 0xFF, 0x4C, 0x00, 0x12, 0x19, 0x10};
+      check(findmy_match(airtag, sizeof(airtag)), "Offline Finding subtype 0x12 matches");
+      uint8_t hap[8] = {0x07, 0xFF, 0x4C, 0x00, 0x06, 0x31, 0x00, 0x00};
+      check(!findmy_match(hap, sizeof(hap)), "HomeKit subtype 0x06 does not match");
+      uint8_t other[8] = {0x07, 0xFF, 0x4C, 0x00, 0x02, 0x15, 0x00, 0x00};
+      check(!findmy_match(other, sizeof(other)), "iBeacon subtype 0x02 does not match");
+      uint8_t truncated[3] = {0x1B, 0xFF, 0x4C};
+      check(!findmy_match(truncated, sizeof(truncated)), "a truncated structure never matches");
+    }
     check(resolve_limit(c, CAT_IBEACON, IBEACON_RSSI_INHERIT, false) == -75,
           "iBeacon inheriting is bounded like anything else");
   }

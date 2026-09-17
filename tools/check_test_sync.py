@@ -38,7 +38,7 @@ REGIONS = {
 
 EXPECTED = {
     "ibeacon_match_": "8591625f759ecf04",
-    "limit_resolution": "b2edee8d2ae849d9",
+    "limit_resolution": "460ad3a1c50b3ba0",
 }
 
 

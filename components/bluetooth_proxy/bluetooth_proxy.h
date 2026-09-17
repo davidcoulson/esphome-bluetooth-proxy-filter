@@ -310,6 +310,17 @@ class BluetoothProxy final : public Component {
   /// blocklist is aimed at untrackable consumer noise, not at accessories the
   /// user deliberately owns.
   void set_allow_homekit(bool allow) { this->allow_homekit_ = allow; }
+  /// Exempt Apple FindMy (Offline Finding) advertisements from
+  /// manufacturer_blocklist: AirTags, AirPods in separated mode and licensed
+  /// third-party tags advertise Apple's company id with subtype 0x12 from a
+  /// random static address, so neither the IRK test nor drop_non_resolvable
+  /// sees them and only the Apple blocklist entry stands in their way. Needed
+  /// by a tracker that knows an accessory's pairing keys (Bermuda's FindMy
+  /// support) and can therefore follow its address rotation. Every passing
+  /// AirTag comes through too, which is why the rule can carry its own RSSI
+  /// limit (set_findmy_rssi), resolved exactly like an iBeacon rule's.
+  void set_allow_findmy(bool allow) { this->allow_findmy_ = allow; }
+  void set_findmy_rssi(int8_t rssi) { this->findmy_rssi_ = rssi; }
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
   void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
@@ -581,6 +592,9 @@ class BluetoothProxy final : public Component {
   /// True when the advert is an iBeacon accepted by a configured filter;
   /// writes that filter's RSSI limit to limit_out.
   bool ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *limit_out) const;
+  /// True when the payload carries Apple manufacturer data with the FindMy
+  /// (Offline Finding) subtype 0x12.
+  bool findmy_match_(const uint8_t *data, uint16_t len) const;
   /// Walks the same length/type/value structures looking for any allowlisted
   /// 16-bit service UUID. Only called when service_uuid_allowlist_ is non-empty.
   bool payload_has_allowed_service_uuid_(const uint8_t *data, uint16_t len) const;
@@ -611,6 +625,8 @@ class BluetoothProxy final : public Component {
   bool allow_homekit_{true};
   bool allow_ibeacon_{false};
   int8_t ibeacon_any_rssi_{-127};
+  bool allow_findmy_{false};
+  int8_t findmy_rssi_{IBEACON_RSSI_INHERIT};
   int8_t min_rssi_gate_{-127};
   bool allowlist_exclusive_{false};
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS

@@ -82,6 +82,28 @@ bool BluetoothProxy::is_espressif_oui_(uint64_t addr) {
   return false;
 }
 
+bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
+  // Apple Offline Finding: manufacturer data, company 0x004C, subtype 0x12.
+  // The rest of the payload (status byte, 22 bytes of public key) carries no
+  // identity a proxy could act on - the address rotation is only resolvable
+  // with the accessory's keys, which live in the tracker, not here.
+  uint16_t i = 0;
+  while (i < len) {
+    const uint8_t field_len = data[i];
+    if (field_len == 0)
+      break;
+    if (static_cast<uint32_t>(i) + 1u + field_len > len)
+      break;
+    if (data[i + 1] == 0xFF && field_len >= 4) {
+      const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
+      if (company == 0x004C && data[i + 4] == 0x12)
+        return true;
+    }
+    i += field_len + 1;
+  }
+  return false;
+}
+
 bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *limit_out) const {
   // Walks the AD structures looking for an iBeacon (Apple company id, subtype
   // 0x02) that one of the configured filters accepts. Writes that filter's RSSI
@@ -492,7 +514,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   //    on the MAC allowlist is never also charged for an IRK resolution.
   //    protected_addr means "exempt from the payload filters at the end of the
   //    chain" and is set by every category except DEFAULT.
-  enum : uint8_t { CAT_DEFAULT, CAT_MAC, CAT_IRK, CAT_UUID, CAT_IBEACON } category = CAT_DEFAULT;
+  enum : uint8_t { CAT_DEFAULT, CAT_MAC, CAT_IRK, CAT_UUID, CAT_IBEACON, CAT_FINDMY } category = CAT_DEFAULT;
   bool protected_addr = false;
 
   for (const uint64_t allowed : this->mac_allowlist_) {
@@ -541,6 +563,16 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
     protected_addr = true;
   }
 
+  // FindMy accessories: same shape of rule as an iBeacon (a manufacturer-data
+  // subtype exempted from the Apple blocklist, optionally with its own RSSI
+  // limit), same place in the chain.
+  bool findmy_has_limit = false;
+  if (category == CAT_DEFAULT && this->allow_findmy_ && this->findmy_match_(raw.data, raw.data_len)) {
+    category = CAT_FINDMY;
+    findmy_has_limit = (this->findmy_rssi_ != IBEACON_RSSI_INHERIT);
+    protected_addr = true;
+  }
+
   // Walks the payload, so it is last and is skipped entirely when unconfigured.
   // Exists for devices whose address cannot be known ahead of time: a device in
   // pairing mode advertises from a rotating private address, which the
@@ -573,6 +605,10 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       limit = ibeacon_has_limit ? ibeacon_limit : this->rssi_threshold_;
       limit_name = "ibeacon";
       break;
+    case CAT_FINDMY:
+      limit = findmy_has_limit ? this->findmy_rssi_ : this->rssi_threshold_;
+      limit_name = "findmy";
+      break;
     case CAT_MAC:
       limit = this->rssi_mac_allowlist_;
       limit_name = "mac_allowlist";
@@ -591,7 +627,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       break;
   }
   // rssi_floor still bounds every category that did NOT bring its own limit.
-  if (!ibeacon_has_limit && this->rssi_floor_ != -127 && (limit == -127 || this->rssi_floor_ > limit))
+  if (!ibeacon_has_limit && !findmy_has_limit && this->rssi_floor_ != -127 && (limit == -127 || this->rssi_floor_ > limit))
     limit = this->rssi_floor_;
   if (limit != -127 && raw.rssi < limit) {
     this->adv_dropped_++;
