@@ -67,7 +67,7 @@ static bool findmy_match(const uint8_t *data, uint16_t len) {
     if (static_cast<uint32_t>(i) + 1u + field_len > len) break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
       const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
-      if (company == 0x004C && data[i + 4] == 0x12) return true;
+      if (company == 0x004C && (data[i + 4] == 0x12 || data[i + 4] == 0x07)) return true;
     }
     i += field_len + 1;
   }
@@ -192,6 +192,17 @@ int main() {
       // Finding subtype 0x12 and a status byte + 22 key bytes.
       uint8_t airtag[31] = {0x02, 0x01, 0x1A, 0x1B, 0xFF, 0x4C, 0x00, 0x12, 0x19, 0x10};
       check(findmy_match(airtag, sizeof(airtag)), "Offline Finding subtype 0x12 matches");
+      // An AirPods case near its owner, shaped like one captured off the air:
+      // Apple manufacturer data with the proximity-pairing subtype 0x07
+      // (length 0x11), then FCB2 service data. Same FindMy-rotated address as
+      // its 0x12 adverts, so it must get through for the case to be tracked.
+      uint8_t airpods[31] = {0x16, 0xFF, 0x4C, 0x00, 0x07, 0x11, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                             0,    0,    0,    0,    0,    0,    0,    0x07, 0x16, 0xB2, 0xFC, 0x01, 0x01, 0x2E, 0x01};
+      check(findmy_match(airpods, sizeof(airpods)), "AirPods proximity-pairing subtype 0x07 matches");
+      // Nearby Info (0x10) is what every iPhone and Watch sends all day. It is
+      // the noise the Apple blocklist exists for and must stay blocked.
+      uint8_t nearby[9] = {0x08, 0xFF, 0x4C, 0x00, 0x10, 0x05, 0x01, 0x18, 0x00};
+      check(!findmy_match(nearby, sizeof(nearby)), "Continuity Nearby Info subtype 0x10 does not match");
       uint8_t hap[8] = {0x07, 0xFF, 0x4C, 0x00, 0x06, 0x31, 0x00, 0x00};
       check(!findmy_match(hap, sizeof(hap)), "HomeKit subtype 0x06 does not match");
       uint8_t other[8] = {0x07, 0xFF, 0x4C, 0x00, 0x02, 0x15, 0x00, 0x00};

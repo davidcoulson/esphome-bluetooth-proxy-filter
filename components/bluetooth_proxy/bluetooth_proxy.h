@@ -311,10 +311,12 @@ class BluetoothProxy final : public Component {
   /// user deliberately owns.
   void set_allow_homekit(bool allow) { this->allow_homekit_ = allow; }
   /// Exempt Apple FindMy (Offline Finding) advertisements from
-  /// manufacturer_blocklist: AirTags, AirPods in separated mode and licensed
-  /// third-party tags advertise Apple's company id with subtype 0x12 from a
-  /// random static address, so neither the IRK test nor drop_non_resolvable
-  /// sees them and only the Apple blocklist entry stands in their way. Needed
+  /// manufacturer_blocklist: AirTags, AirPods and licensed third-party tags
+  /// advertise Apple's company id with subtype 0x12 (or, for AirPods near
+  /// their owner, proximity-pairing subtype 0x07 on the same rotated address)
+  /// from a random static address, so neither the IRK test nor
+  /// drop_non_resolvable sees them and only the Apple blocklist entry stands
+  /// in their way. Needed
   /// by a tracker that knows an accessory's pairing keys (Bermuda's FindMy
   /// support) and can therefore follow its address rotation. Every passing
   /// AirTag comes through too, which is why the rule can carry its own RSSI

@@ -228,8 +228,10 @@ _IBEACON_FILTER_SCHEMA = cv.Schema(
 )
 
 
-# allow_findmy: `true` exempts Apple FindMy (Offline Finding, subtype 0x12)
-# adverts from manufacturer_blocklist and nothing more; a mapping with `rssi`
+# allow_findmy: `true` exempts Apple FindMy adverts (Offline Finding subtype
+# 0x12, and AirPods proximity-pairing subtype 0x07, which AirPods near their
+# owner send from the same rotated address) from manufacturer_blocklist and
+# nothing more; a mapping with `rssi`
 # gives the rule its own limit, resolved exactly like an iBeacon rule's
 # (overrides rssi_threshold and rssi_floor for the adverts it matches).
 _FINDMY_SCHEMA = cv.Schema(

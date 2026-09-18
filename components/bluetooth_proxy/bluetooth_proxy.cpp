@@ -87,6 +87,12 @@ bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
   // The rest of the payload (status byte, 22 bytes of public key) carries no
   // identity a proxy could act on - the address rotation is only resolvable
   // with the accessory's keys, which live in the tracker, not here.
+  //
+  // Subtype 0x07 is AirPods proximity pairing - the advert that raises the
+  // AirPods card on a nearby iPhone. AirPods near their owner send that
+  // instead of 0x12, but from the SAME FindMy-rotated address, so a tracker
+  // holding the keys resolves it just as well. Without this an owned AirPods
+  // case is heard only by receivers that do not run the Apple blocklist.
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
@@ -96,7 +102,7 @@ bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
       break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
       const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
-      if (company == 0x004C && data[i + 4] == 0x12)
+      if (company == 0x004C && (data[i + 4] == 0x12 || data[i + 4] == 0x07))
         return true;
     }
     i += field_len + 1;

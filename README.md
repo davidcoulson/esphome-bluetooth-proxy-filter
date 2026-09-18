@@ -26,7 +26,7 @@ exactly like upstream.
 | `drop_non_resolvable` | Drop non-resolvable private addresses — they rotate but carry no identity, so an IRK cannot resolve them and they can never be tracked (default `false`) |
 | `allow_espressif` | Exempt Espressif-OUI addresses from the IRK test (default `true`) |
 | `allow_ibeacon` | Exempt iBeacons from `manufacturer_blocklist` — `true` for all, or a list of `major`/`minor`/`rssi` filters (default `false`) |
-| `allow_findmy` | Exempt Apple FindMy (Offline Finding) advertisements — AirTags, AirPods in separated mode, licensed third-party tags — from `manufacturer_blocklist`: `true`, or `{rssi: -85}` to give them their own limit (default `false`) |
+| `allow_findmy` | Exempt Apple FindMy (Offline Finding) advertisements — AirTags, AirPods, licensed third-party tags — from `manufacturer_blocklist`: `true`, or `{rssi: -85}` to give them their own limit (default `false`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
 `get_adv_dropped_rpa()`) so the effect is measurable per-proxy rather than guessed.
@@ -109,9 +109,13 @@ share a single pass over the payload.
 
 ## Exempting FindMy accessories
 
-AirTags, AirPods in separated mode and licensed third-party FindMy tags
-advertise Apple manufacturer data with the Offline Finding subtype `0x12`,
-from a random static address. Neither the IRK test nor `drop_non_resolvable`
+AirTags, AirPods and licensed third-party FindMy tags advertise Apple
+manufacturer data with the Offline Finding subtype `0x12`, from a random
+static address. AirPods near their owner send the proximity-pairing subtype
+`0x07` instead - the advert that raises the AirPods card on an iPhone - but
+from the same rotated address, so `allow_findmy` exempts that subtype too.
+Without it an AirPods case sitting on a desk is heard only by receivers that
+run no Apple blocklist. Neither the IRK test nor `drop_non_resolvable`
 touches them, so with `manufacturer_blocklist: [0x004C]` the Apple entry is
 the only thing dropping them - and it drops every one. A tracker that holds an
 accessory's pairing keys (Bermuda's FindMy support) can follow its address
