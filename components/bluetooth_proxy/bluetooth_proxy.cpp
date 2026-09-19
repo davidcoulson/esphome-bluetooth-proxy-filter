@@ -349,8 +349,57 @@ int BluetoothProxy::set_irks(const std::string &text) {
     return -1;
   }
   this->irks_ = std::move(parsed);
+  this->recompute_gate_();
   ESP_LOGI(TAG, "Loaded %u IRK(s) at runtime", static_cast<unsigned>(this->irks_.size()));
   return static_cast<int>(this->irks_.size());
+}
+
+void BluetoothProxy::recompute_gate_() {
+  // The loosest limit any REACHABLE category could apply. A category nothing
+  // can land in contributes nothing: with no mac_allowlist there is no CAT_MAC
+  // advert for the gate to protect, so its (possibly unbounded) limit must not
+  // hold the gate open.
+  //
+  // -127 on a category key means "inherit", not "forward everything", so each
+  // category resolves to its effective bound first. A category whose effective
+  // bound really is -127 (e.g. a MAC allowlist with no floor) disables the gate.
+  auto bound = [](int8_t explicit_limit, int8_t fallback) -> int8_t {
+    return explicit_limit != -127 ? explicit_limit : fallback;
+  };
+  // Every limit below is floor-bounded at the point of use unless the rule
+  // brought its own, so the floor bounds them here too.
+  auto floored = [this](int8_t limit) -> int8_t {
+    if (this->rssi_floor_ == -127)
+      return limit;
+    return (limit == -127 || this->rssi_floor_ > limit) ? this->rssi_floor_ : limit;
+  };
+
+  int8_t gate = floored(this->rssi_threshold_);  // DEFAULT, and every inheriting rule
+  auto loosen = [&gate](int8_t limit) {
+    if (gate != -127 && (limit == -127 || limit < gate))
+      gate = limit;
+  };
+  if (!this->mac_allowlist_.empty())
+    loosen(floored(this->rssi_mac_allowlist_));
+  // irks_hex_ is the compile-time list before setup() has parsed it.
+  if (!this->irks_.empty() || this->irks_hex_ != nullptr)
+    loosen(floored(bound(this->rssi_irk_, this->rssi_threshold_)));
+  if (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty() || !this->service_uuid128_hex_.empty())
+    loosen(floored(bound(this->rssi_service_uuid_, this->rssi_threshold_)));
+  // A rule with its own RSSI overrides the floor as well, so it is NOT floored.
+  if (this->allow_ibeacon_ && this->ibeacon_any_rssi_ != IBEACON_RSSI_INHERIT)
+    loosen(this->ibeacon_any_rssi_);
+  for (const auto &mj : this->ibeacon_majors_) {
+    if (mj.rssi != IBEACON_RSSI_INHERIT)
+      loosen(mj.rssi);
+  }
+  for (const auto &pr : this->ibeacon_pairs_) {
+    if (pr.rssi != IBEACON_RSSI_INHERIT)
+      loosen(pr.rssi);
+  }
+  if (this->allow_findmy_ && this->findmy_rssi_ != IBEACON_RSSI_INHERIT)
+    loosen(this->findmy_rssi_);
+  this->min_rssi_gate_ = gate;
 }
 
 bool BluetoothProxy::irk_matches_(uint64_t addr) const {
@@ -450,6 +499,8 @@ void BluetoothProxy::setup() {
     this->service_uuid128_hex_.clear();
     this->service_uuid128_hex_.shrink_to_fit();
   }
+
+  this->recompute_gate_();
 
   if (this->rssi_floor_ != -127)
     ESP_LOGCONFIG(TAG, "Absolute RSSI floor %d dB; applies to allowlisted devices too", this->rssi_floor_);
@@ -568,6 +619,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
 
   // An RPA is identified from two bits of the address, so the expensive part
   // (irk_matches_, which runs AES per key) is reached only by actual RPAs.
+  bool unresolved_rpa = false;
   if (category == CAT_DEFAULT && !this->irks_.empty() && this->address_is_rpa_(raw.address, raw.addr_type) &&
       !(this->allow_espressif_ && this->is_espressif_oui_(raw.address))) {
     if (this->irk_matches_(raw.address)) {
@@ -577,13 +629,12 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       category = CAT_IRK;
       protected_addr = true;
     } else {
-      // Somebody else's phone or watch: it rotates, so it can never be tracked
-      // here and is pure noise. Dropped regardless of RSSI - proximity does not
-      // make an unidentifiable device identifiable.
-      this->adv_dropped_++;
-      this->adv_dropped_rpa_++;
-      ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": unresolved RPA", raw.address);
-      return;
+      // Probably somebody else's phone or watch - but NOT dropped yet. The
+      // payload rules below exist for devices whose address cannot be known in
+      // advance, and a device in pairing mode may well advertise from an RPA.
+      // Dropping here made service_uuid_allowlist unable to rescue one, which
+      // is the case it is documented to cover. Decided after categorisation.
+      unresolved_rpa = true;
     }
   }
 
@@ -623,6 +674,17 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
     category = CAT_UUID;
     protected_addr = true;
     this->adv_allowed_service_uuid_++;
+  }
+
+  // An RPA that resolved to none of our IRKs and that no other allow rule
+  // claimed: it rotates, so it can never be tracked here and is pure noise.
+  // Dropped regardless of RSSI - proximity does not make an unidentifiable
+  // device identifiable.
+  if (category == CAT_DEFAULT && unresolved_rpa) {
+    this->adv_dropped_++;
+    this->adv_dropped_rpa_++;
+    ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": unresolved RPA", raw.address);
+    return;
   }
 
   // 4. Apply the category's own RSSI limit.
@@ -705,6 +767,8 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   }
 
   this->adv_forwarded_++;
+  if (category == CAT_IRK)
+    this->adv_forwarded_irk_++;
 
   auto &adv = this->response_.advertisements[this->response_.advertisements_len];
   adv.address = raw.address;
