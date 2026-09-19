@@ -58,7 +58,11 @@ def normalise(text: str) -> str:
 
 
 def function_body(src: str, name: str, path: Path) -> str:
-    m = re.search(rf"^[^\n;{{}}]*\b(?:BluetoothProxy|BLEAdvertFilter)::{re.escape(name)}\(", src, re.M)
+    m = re.search(
+        rf"^[^\n;{{}}]*\b(?:BluetoothProxy|BLEAdvertFilter)::{re.escape(name)}\(",
+        src,
+        re.M,
+    )
     if not m:
         # Reported as a difference rather than aborting, so one run lists
         # everything that is missing.
@@ -105,10 +109,15 @@ def public_api(header: str) -> set[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hook", required=True, help="path to an esphome-ble-advert-filter checkout")
+    ap.add_argument(
+        "--hook", required=True, help="path to an esphome-ble-advert-filter checkout"
+    )
     args = ap.parse_args()
     hook_dir = Path(args.hook) / "components" / "ble_advert_filter"
-    hook_cpp_path, hook_h_path = hook_dir / "ble_advert_filter.cpp", hook_dir / "ble_advert_filter.h"
+    hook_cpp_path, hook_h_path = (
+        hook_dir / "ble_advert_filter.cpp",
+        hook_dir / "ble_advert_filter.h",
+    )
 
     fork_cpp, hook_cpp = FORK_CPP.read_text(), hook_cpp_path.read_text()
     bad = []
@@ -126,15 +135,23 @@ def main() -> int:
     if a != b:
         bad.append("filter chain")
 
-    a, b = normalise(oui_table(fork_cpp, FORK_CPP)), normalise(oui_table(hook_cpp, hook_cpp_path))
+    a, b = (
+        normalise(oui_table(fork_cpp, FORK_CPP)),
+        normalise(oui_table(hook_cpp, hook_cpp_path)),
+    )
     print(f"  {'ok  ' if a == b else 'DIFF'}  Espressif OUI table")
     if a != b:
         bad.append("OUI table")
 
-    fork_api, hook_api = public_api(FORK_H.read_text()), public_api(hook_h_path.read_text())
+    fork_api, hook_api = (
+        public_api(FORK_H.read_text()),
+        public_api(hook_h_path.read_text()),
+    )
     only_fork, only_hook = sorted(fork_api - hook_api), sorted(hook_api - fork_api)
     same = not only_fork and not only_hook
-    print(f"  {'ok  ' if same else 'DIFF'}  public filter API ({len(fork_api & hook_api)} methods)")
+    print(
+        f"  {'ok  ' if same else 'DIFF'}  public filter API ({len(fork_api & hook_api)} methods)"
+    )
     if not same:
         bad.append("public API")
         for n in only_fork:

@@ -303,17 +303,22 @@ bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint
 }
 
 bool BluetoothProxy::address_is_rpa_(uint64_t addr, uint8_t addr_type) {
-  // addr_type 0 is public; a public address is never resolvable no matter what
-  // its top bits look like.
-  if (addr_type == 0)
+  // Only a RANDOM address (type 1) has the sub-type bits this tests. Type 0 is
+  // public. Types 2 and 3 are what the ESP-IDF controller reports once it has
+  // resolved an RPA itself - i.e. for a device this proxy is bonded to - and
+  // carry the IDENTITY address: for type 2 that is a public address, whose
+  // leading OUI byte means nothing here. Treating "not 0" as random dropped a
+  // bonded device with a 40:-7F: OUI as an unresolved RPA.
+  if (addr_type != ADDR_TYPE_RANDOM)
     return false;
   return (((addr >> 40) & 0xC0) == 0x40);
 }
 
 bool BluetoothProxy::address_is_non_resolvable_(uint64_t addr, uint8_t addr_type) {
-  // Same guard as address_is_rpa_: a public address is never a private one, no
-  // matter what its leading bits look like.
-  if (addr_type == 0)
+  // Same guard as address_is_rpa_, and here it bites harder: 00:-3F: covers a
+  // large share of real OUIs, so a bonded device reported by its public
+  // identity address (type 2) would be discarded by drop_non_resolvable.
+  if (addr_type != ADDR_TYPE_RANDOM)
     return false;
   return (((addr >> 40) & 0xC0) == 0x00);
 }
@@ -338,8 +343,15 @@ int BluetoothProxy::set_irks(const std::string &text) {
     if (j - i == 32) {
       std::array<uint8_t, 16> irk{};
       if (parse_hex(text.c_str() + i, 32, irk.data(), 16) == 32 &&
-          std::find(parsed.begin(), parsed.end(), irk) == parsed.end())
+          std::find(parsed.begin(), parsed.end(), irk) == parsed.end()) {
+        // Every key costs an AES block per unresolved advertisement, and the
+        // text arrives over the API from outside the device. Bound both.
+        if (parsed.size() >= MAX_RUNTIME_IRKS) {
+          ESP_LOGW(TAG, "set_irks: more than %u keys, ignoring the rest", static_cast<unsigned>(MAX_RUNTIME_IRKS));
+          break;
+        }
         parsed.push_back(irk);
+      }
     }
     i = j;
   }
@@ -730,7 +742,8 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       break;
   }
   // rssi_floor still bounds every category that did NOT bring its own limit.
-  if (!ibeacon_has_limit && !findmy_has_limit && this->rssi_floor_ != -127 && (limit == -127 || this->rssi_floor_ > limit))
+  if (!ibeacon_has_limit && !findmy_has_limit && this->rssi_floor_ != -127 &&
+      (limit == -127 || this->rssi_floor_ > limit))
     limit = this->rssi_floor_;
   if (limit != -127 && raw.rssi < limit) {
     this->adv_dropped_++;
