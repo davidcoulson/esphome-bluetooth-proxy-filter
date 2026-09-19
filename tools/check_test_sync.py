@@ -34,11 +34,17 @@ REGIONS = {
         "  int8_t limit;\n  const char *limit_name;",
         "  // 5. Exclusive mode",
     ),
+    # Transcribed by tests/test_set_irks.cpp.
+    "set_irks": (
+        "int BluetoothProxy::set_irks(",
+        "bool BluetoothProxy::irk_matches_(",
+    ),
 }
 
 EXPECTED = {
     "ibeacon_match_": "8591625f759ecf04",
     "limit_resolution": "460ad3a1c50b3ba0",
+    "set_irks": "eccbaf84fc16f6c8",
 }
 
 
@@ -80,7 +86,7 @@ def main() -> int:
     for n in bad:
         print(f"  {n}: recorded {EXPECTED[n]}, now {actual[n]}", file=sys.stderr)
     print(
-        "\ntests/test_ibeacon_match.cpp transcribes this logic and may now be\n"
+        "\nA test under tests/ transcribes this logic and may now be\n"
         "testing something the component no longer does. Re-read the test\n"
         "against the source, then run:  python3 tools/check_test_sync.py --update",
         file=sys.stderr,

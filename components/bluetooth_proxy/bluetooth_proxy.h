@@ -283,6 +283,31 @@ class BluetoothProxy final : public Component {
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
   void set_irks_hex(const char *hex) { this->irks_hex_ = hex; }
+  /// Replace the IRK list at runtime - typically from a Home Assistant entity,
+  /// so a new phone does not mean reflashing every proxy.
+  ///
+  /// Every run of EXACTLY 32 hex characters in `text` is taken as a key and
+  /// everything else is ignored. That makes the format forgiving on purpose:
+  /// commas, newlines, quotes, "label: key" pairs and the braces of a
+  /// stringified dict all work, which lets the Home Assistant side keep a name
+  /// next to each key. The one rule is that no label may itself contain 32
+  /// consecutive hex digits. Duplicates are dropped.
+  ///
+  /// Returns the number of keys installed. If `text` contains NO valid key the
+  /// current list is left untouched and -1 is returned: an entity that is
+  /// briefly unavailable (e.g. during a Home Assistant restart) must not be
+  /// able to wipe the list, because with a manufacturer blocklist active that
+  /// would silently drop our own phones. Use clear_irks() to empty it on purpose.
+  ///
+  /// Safe to call at any time: advertisements and API state updates are both
+  /// dispatched from the main loop, so the list is never swapped mid-lookup.
+  int set_irks(const std::string &text);
+  /// Deliberately empty the IRK list, which turns IRK gating off entirely.
+  void clear_irks() { this->irks_.clear(); }
+  size_t get_irk_count() const { return this->irks_.size(); }
+  /// The live list, read-only - so a YAML lambda can persist the last good
+  /// list to flash and restore it before Home Assistant connects.
+  const std::vector<std::array<uint8_t, 16>> &get_irks() const { return this->irks_; }
   /// Exempt Espressif-assigned addresses from the unresolved-RPA test below.
   /// NOTE: this does NOT bypass the RSSI threshold (an earlier version of this
   /// comment claimed it did). It is also close to inert on its own: ESPHome

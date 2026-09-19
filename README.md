@@ -107,6 +107,41 @@ Without the protected flag, a `manufacturer_blocklist: [0x004C]` entry would dis
 exactly the devices the IRK list exists to keep. The name and manufacturer checks
 share a single pass over the payload.
 
+## Changing IRKs without reflashing
+
+`irks:` is compile-time, so on its own a new phone means reflashing every
+proxy. `set_irks()` replaces the list at runtime; the usual source is a Home
+Assistant entity each proxy subscribes to:
+
+```yaml
+text_sensor:
+  - platform: homeassistant
+    entity_id: sensor.ble_proxy_irks
+    attribute: irks            # an attribute: HA caps states at 255 characters
+    internal: true
+    on_value:
+      - lambda: 'id(ble_proxy).set_irks(x);'
+```
+
+The parser takes every run of **exactly 32 hex characters** and ignores the
+rest, so the Home Assistant side can keep a name next to each key -
+`David phone: 0011...`, or a stringified dict - and a replacement is an edit
+to one named line. The only rule is that no label contains 32 consecutive hex
+digits. Runs of 31 or 33 are rejected rather than trimmed, and two keys with
+no separator between them (64 digits) are rejected rather than split.
+
+**Input with no valid key leaves the current list untouched** and returns
+`-1`. An entity that is briefly `unavailable` during a Home Assistant restart
+must not be able to wipe the list: with `manufacturer_blocklist: [0x004C]` a
+wiped list silently drops your own phones. `clear_irks()` empties it on
+purpose.
+
+The compile-time list still loads in `setup()`; `set_irks()` replaces it, it
+does not merge. `get_irks()` exposes the live list read-only so a lambda can
+persist it to flash for use before Home Assistant connects. Calls are safe at
+any time - advertisements and API state updates are both dispatched from the
+main loop, so the list is never swapped mid-lookup.
+
 ## Exempting FindMy accessories
 
 AirTags, AirPods and licensed third-party FindMy tags advertise Apple

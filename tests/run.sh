@@ -13,5 +13,10 @@ c++ -std=c++17 -Wall -Wextra -Werror -o "$out" tests/test_ibeacon_match.cpp
 "$out"
 
 echo
+echo "== runtime IRK loader (host-compiled) =="
+c++ -std=c++17 -Wall -Wextra -Werror -o "$out" tests/test_set_irks.cpp
+"$out"
+
+echo
 echo "== pre-gate computation =="
 python3 tests/test_effective_gate.py

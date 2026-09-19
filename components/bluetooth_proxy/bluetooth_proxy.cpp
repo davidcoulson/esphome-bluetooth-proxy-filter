@@ -318,6 +318,41 @@ bool BluetoothProxy::address_is_non_resolvable_(uint64_t addr, uint8_t addr_type
   return (((addr >> 40) & 0xC0) == 0x00);
 }
 
+int BluetoothProxy::set_irks(const std::string &text) {
+  // Parse into a scratch vector first so a bad input never leaves the live
+  // list half-replaced.
+  std::vector<std::array<uint8_t, 16>> parsed;
+  const size_t n = text.size();
+  size_t i = 0;
+  while (i < n) {
+    if (!isxdigit(static_cast<unsigned char>(text[i]))) {
+      i++;
+      continue;
+    }
+    size_t j = i;
+    while (j < n && isxdigit(static_cast<unsigned char>(text[j])))
+      j++;
+    // Exactly 32: a longer run is not a key with a suffix, it is something
+    // else entirely (a hash, a UUID without dashes) and must not be truncated
+    // into one.
+    if (j - i == 32) {
+      std::array<uint8_t, 16> irk{};
+      if (parse_hex(text.c_str() + i, 32, irk.data(), 16) == 32 &&
+          std::find(parsed.begin(), parsed.end(), irk) == parsed.end())
+        parsed.push_back(irk);
+    }
+    i = j;
+  }
+  if (parsed.empty()) {
+    ESP_LOGW(TAG, "set_irks: no 32-hex-character keys found, keeping the current %u",
+             static_cast<unsigned>(this->irks_.size()));
+    return -1;
+  }
+  this->irks_ = std::move(parsed);
+  ESP_LOGI(TAG, "Loaded %u IRK(s) at runtime", static_cast<unsigned>(this->irks_.size()));
+  return static_cast<int>(this->irks_.size());
+}
+
 bool BluetoothProxy::irk_matches_(uint64_t addr) const {
   // Bluetooth Core "ah": hash = e(IRK, 0-padding | prand)[low 24 bits], where
   // the RPA is prand (top 3 bytes) | hash (bottom 3 bytes).
