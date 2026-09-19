@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  parity-and-filter-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: davidcoulson/esphome-ble-advert-filter
+          # The matching branch if there is one (a change that spans both repos
+          # is developed under the same branch name), otherwise main.
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: hook
+        continue-on-error: true
+        id: hook_branch
+      - if: steps.hook_branch.outcome != 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: davidcoulson/esphome-ble-advert-filter
+          path: hook
+      - run: HOOK_REPO=hook tests/run.sh

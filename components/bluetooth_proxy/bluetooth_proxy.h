@@ -169,7 +169,10 @@ class BluetoothProxy final : public Component {
   /// Advertisements weaker than this are dropped before they are queued for the
   /// API, so they never reach the network. -127 (the default) forwards
   /// everything, matching upstream behaviour.
-  void set_rssi_threshold(int8_t rssi) { this->rssi_threshold_ = rssi; }
+  void set_rssi_threshold(int8_t rssi) {
+    this->rssi_threshold_ = rssi;
+    this->recompute_gate_();
+  }
   int8_t get_rssi_threshold() const { return this->rssi_threshold_; }
 
   /// Absolute reception floor, applied to EVERY advertisement including ones
@@ -186,7 +189,10 @@ class BluetoothProxy final : public Component {
   /// NOTE: the floor also caps the useful range of rssi_threshold. Setting a
   /// threshold weaker (more negative) than the floor has no effect, because
   /// the floor has already discarded those advertisements.
-  void set_rssi_floor(int8_t rssi) { this->rssi_floor_ = rssi; }
+  void set_rssi_floor(int8_t rssi) {
+    this->rssi_floor_ = rssi;
+    this->recompute_gate_();
+  }
   int8_t get_rssi_floor() const { return this->rssi_floor_; }
 
   /// Per-category RSSI limits. Every advertisement is categorised first (MAC
@@ -240,21 +246,46 @@ class BluetoothProxy final : public Component {
   /// -127, which means the opposite (forward at any strength).
   static constexpr int8_t IBEACON_RSSI_INHERIT = -128;
 
-  void set_allow_ibeacon(bool allow) { this->allow_ibeacon_ = allow; }
-  void set_ibeacon_any_rssi(int8_t rssi) { this->ibeacon_any_rssi_ = rssi; }
-  void add_ibeacon_major(uint16_t major, int8_t rssi) { this->ibeacon_majors_.push_back({major, rssi}); }
+  void set_allow_ibeacon(bool allow) {
+    this->allow_ibeacon_ = allow;
+    this->recompute_gate_();
+  }
+  void set_ibeacon_any_rssi(int8_t rssi) {
+    this->ibeacon_any_rssi_ = rssi;
+    this->recompute_gate_();
+  }
+  void add_ibeacon_major(uint16_t major, int8_t rssi) {
+    this->ibeacon_majors_.push_back({major, rssi});
+    this->recompute_gate_();
+  }
   void add_ibeacon_major_minor(uint16_t major, uint16_t minor, int8_t rssi) {
     this->ibeacon_pairs_.push_back({(static_cast<uint32_t>(major) << 16) | minor, rssi});
+    this->recompute_gate_();
   }
-  /// Cheap pre-gate: the loosest limit any rule could apply. Anything weaker
-  /// than this is dropped before the categoriser runs, so a fleet that lets its
-  /// own beacons through at -127 still does not pay an AES resolve and a
-  /// payload walk for every distant advert in the neighbourhood.
-  void set_min_rssi_gate(int8_t rssi) { this->min_rssi_gate_ = rssi; }
+  /// Cheap pre-gate: the loosest RSSI limit any rule in this config could
+  /// apply. Anything weaker is dropped before the categoriser runs, so a fleet
+  /// that lets its own beacons through at a low RSSI still does not pay an AES
+  /// resolve and a payload walk for every distant advert in the neighbourhood.
+  ///
+  /// Derived, never set: recompute_gate_() runs whenever a limit or a list it
+  /// depends on changes, INCLUDING at runtime. It used to be computed once at
+  /// codegen, so a number entity lowering rssi_threshold below the compiled
+  /// gate silently stopped working - the gate had already dropped the adverts
+  /// the new threshold was meant to admit.
+  int8_t get_min_rssi_gate() const { return this->min_rssi_gate_; }
 
-  void set_rssi_mac_allowlist(int8_t rssi) { this->rssi_mac_allowlist_ = rssi; }
-  void set_rssi_irk(int8_t rssi) { this->rssi_irk_ = rssi; }
-  void set_rssi_service_uuid(int8_t rssi) { this->rssi_service_uuid_ = rssi; }
+  void set_rssi_mac_allowlist(int8_t rssi) {
+    this->rssi_mac_allowlist_ = rssi;
+    this->recompute_gate_();
+  }
+  void set_rssi_irk(int8_t rssi) {
+    this->rssi_irk_ = rssi;
+    this->recompute_gate_();
+  }
+  void set_rssi_service_uuid(int8_t rssi) {
+    this->rssi_service_uuid_ = rssi;
+    this->recompute_gate_();
+  }
 
   /// Advertisement counters, for measuring what rssi_threshold actually costs.
   /// Free-running and never reset: unsigned wraparound is well defined, so a
@@ -265,6 +296,11 @@ class BluetoothProxy final : public Component {
   /// IRK. Tracked separately because it answers a different question - how
   /// much of the noise is untrackable phones rather than distant devices.
   uint32_t get_adv_dropped_rpa() const { return this->adv_dropped_rpa_; }
+  /// Advertisements forwarded because their RPA resolved to one of our IRKs.
+  /// The counterpart of get_adv_dropped_rpa(), and the only way to tell a wrong
+  /// key from an absent phone: a key that never matches leaves this flat while
+  /// its owner's adverts are counted as somebody else's and dropped.
+  uint32_t get_adv_forwarded_irk() const { return this->adv_forwarded_irk_; }
   /// Subset of get_adv_forwarded(): advertisements that reached Home Assistant
   /// only because they carried an allowlisted service UUID. Zero while nothing
   /// is pairing, so a non-zero reading is direct evidence the passthrough fired.
@@ -282,7 +318,10 @@ class BluetoothProxy final : public Component {
 
   /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
   /// empty no IRK gating happens at all (upstream behaviour).
-  void set_irks_hex(const char *hex) { this->irks_hex_ = hex; }
+  void set_irks_hex(const char *hex) {
+    this->irks_hex_ = hex;
+    this->recompute_gate_();
+  }
   /// Replace the IRK list at runtime - typically from a Home Assistant entity,
   /// so a new phone does not mean reflashing every proxy.
   ///
@@ -301,9 +340,14 @@ class BluetoothProxy final : public Component {
   ///
   /// Safe to call at any time: advertisements and API state updates are both
   /// dispatched from the main loop, so the list is never swapped mid-lookup.
+  /// At most MAX_RUNTIME_IRKS keys are taken; the rest are ignored with a warning.
+  static constexpr size_t MAX_RUNTIME_IRKS = 32;
   int set_irks(const std::string &text);
   /// Deliberately empty the IRK list, which turns IRK gating off entirely.
-  void clear_irks() { this->irks_.clear(); }
+  void clear_irks() {
+    this->irks_.clear();
+    this->recompute_gate_();
+  }
   size_t get_irk_count() const { return this->irks_.size(); }
   /// The live list, read-only - so a YAML lambda can persist the last good
   /// list to flash and restore it before Home Assistant connects.
@@ -346,11 +390,20 @@ class BluetoothProxy final : public Component {
   /// support) and can therefore follow its address rotation. Every passing
   /// AirTag comes through too, which is why the rule can carry its own RSSI
   /// limit (set_findmy_rssi), resolved exactly like an iBeacon rule's.
-  void set_allow_findmy(bool allow) { this->allow_findmy_ = allow; }
-  void set_findmy_rssi(int8_t rssi) { this->findmy_rssi_ = rssi; }
+  void set_allow_findmy(bool allow) {
+    this->allow_findmy_ = allow;
+    this->recompute_gate_();
+  }
+  void set_findmy_rssi(int8_t rssi) {
+    this->findmy_rssi_ = rssi;
+    this->recompute_gate_();
+  }
   /// Address that bypasses every filter. Use for beacons that must always be
   /// forwarded (tracked tags), which typically advertise no local name.
-  void add_allowed_mac(uint64_t addr) { this->mac_allowlist_.push_back(addr); }
+  void add_allowed_mac(uint64_t addr) {
+    this->mac_allowlist_.push_back(addr);
+    this->recompute_gate_();
+  }
   /// Address this proxy ignores entirely, everything else proceeding normally.
   ///
   /// Checked before mac_allowlist and before every other filter, so an entry
@@ -378,7 +431,10 @@ class BluetoothProxy final : public Component {
   /// commissioning/pairing service (Matter uses 0xFFF6) does so from a rotating
   /// private address, so the address-type filters below would discard it and no
   /// MAC could be allowlisted ahead of time.
-  void add_allowed_service_uuid(uint16_t uuid) { this->service_uuid_allowlist_.push_back(uuid); }
+  void add_allowed_service_uuid(uint16_t uuid) {
+    this->service_uuid_allowlist_.push_back(uuid);
+    this->recompute_gate_();
+  }
   /// As add_allowed_service_uuid(), for a 128-bit (vendor) service UUID.
   /// Takes the canonical big-endian byte order; advertisements carry these
   /// little-endian, and the walker reverses before comparing.
@@ -389,7 +445,10 @@ class BluetoothProxy final : public Component {
   /// does - allow_espressif does NOT exempt it, despite what this header used
   /// to claim. Allowlisting the UUID is what actually makes provisioning work
   /// on a far-away board.
-  void add_allowed_service_uuid128(const char *hex) { this->service_uuid128_hex_.push_back(hex); }
+  void add_allowed_service_uuid128(const char *hex) {
+    this->service_uuid128_hex_.push_back(hex);
+    this->recompute_gate_();
+  }
 
   uint32_t get_legacy_version() const {
     if (!this->active_) {
@@ -563,6 +622,7 @@ class BluetoothProxy final : public Component {
   uint32_t adv_forwarded_{0};
   uint32_t adv_dropped_{0};
   uint32_t adv_dropped_rpa_{0};
+  uint32_t adv_forwarded_irk_{0};
   uint32_t adv_allowed_service_uuid_{0};
   uint32_t adv_dropped_floor_{0};
   uint32_t adv_dropped_gate_{0};
@@ -603,6 +663,9 @@ class BluetoothProxy final : public Component {
   /// top two bits are 0b01. The addr_type check is essential - plenty of public
   /// OUIs (Espressif's 4C:xx among them) fall in that numeric range and would
   /// otherwise be misread as RPAs and discarded.
+  // RawAdvertisement::addr_type, as the hubs report it: 0 public, 1 random.
+  // ESP-IDF adds 2/3 for identity addresses of RPAs its controller resolved.
+  static constexpr uint8_t ADDR_TYPE_RANDOM = 1;
   static bool address_is_rpa_(uint64_t addr, uint8_t addr_type);
   /// True for a *random* address whose top two bits are 0b00. The addr_type
   /// check is essential: plenty of real public OUIs begin with a low octet
@@ -628,6 +691,7 @@ class BluetoothProxy final : public Component {
   /// One 128-bit UUID from an advertisement (little-endian, as transmitted)
   /// against the long allowlist, and against the short one via the Base UUID.
   bool uuid128_matches_(const uint8_t *le_bytes) const;
+  void recompute_gate_();
 
   // BLE advertisement batching
   api::BluetoothLERawAdvertisementsResponse response_;

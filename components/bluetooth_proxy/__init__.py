@@ -250,15 +250,14 @@ def _validate_allow_findmy(value: bool | ConfigType) -> bool | ConfigType:
     return _FINDMY_SCHEMA(value)
 
 
-def _findmy_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
-    """Emit the allow_findmy config; returns the RSSI limits it introduced."""
+def _findmy_to_code(var: cg.MockObj, config: ConfigType) -> None:
+    """Emit the allow_findmy config."""
     value = config.get(CONF_ALLOW_FINDMY, False)
     if value is False:
-        return []
+        return
     cg.add(var.set_allow_findmy(True))
     rssi = _IBEACON_RSSI_INHERIT if value is True else value[CONF_RSSI]
     cg.add(var.set_findmy_rssi(rssi))
-    return [rssi]
 
 
 def _validate_allow_ibeacon(value: bool | list[ConfigType]) -> bool | list[ConfigType]:
@@ -289,7 +288,10 @@ def _validate_rssi_floor(config: ConfigType) -> ConfigType:
                 f"weak. Raise it above the floor, or remove it.",
                 path=[key],
             )
-    if floor != -127 and floor > threshold:
+    # -127 is "no threshold", not a very loose one: a floor on its own ("drop
+    # only what is too weak to mean anything") is a legitimate config, and used
+    # to be rejected here with a message about a threshold nobody had set.
+    if floor != -127 and threshold != -127 and floor > threshold:
         raise cv.Invalid(
             f"{CONF_RSSI_FLOOR} ({floor}) must be at or below "
             f"{CONF_RSSI_THRESHOLD} ({threshold}): the floor is an absolute "
@@ -361,91 +363,28 @@ def _rp2_config_schema() -> cv.All:
     return cv.All(schema, populate_connections, _validate_rssi_floor)
 
 
-def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> list[int]:
-    """Emit the allow_ibeacon config; returns the RSSI limits it introduced.
-
-    The caller needs those to size the pre-gate: a rule that forwards at -127
-    means nothing can be dropped cheaply up front.
-    """
+def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> None:
+    """Emit the allow_ibeacon config."""
     value = config[CONF_ALLOW_IBEACON]
     if value is False:
-        return []
+        return
     if value is True:
         # A bare `true` exempts every iBeacon from the blocklist and nothing
         # more; the distance rules still apply, same as an inheriting filter.
         cg.add(var.set_allow_ibeacon(True))
         cg.add(var.set_ibeacon_any_rssi(_IBEACON_RSSI_INHERIT))
-        return [_IBEACON_RSSI_INHERIT]
+        return
     # A list scopes the exemption, so the unscoped flag stays off.
     cg.add(var.set_allow_ibeacon(False))
-    limits = []
     for entry in value:
         major = entry[CONF_MAJOR]
         rssi = entry[CONF_RSSI]
-        limits.append(rssi)
         minors = entry.get(CONF_MINOR)
         if not minors:
             cg.add(var.add_ibeacon_major(major, rssi))
             continue
         for minor in minors:
             cg.add(var.add_ibeacon_major_minor(major, minor, rssi))
-    return limits
-
-
-def effective_gate(
-    threshold: int,
-    floor: int,
-    mac_allowlist: int,
-    irk: int,
-    service_uuid: int,
-    ibeacon_limits: list[int],
-) -> int:
-    """The loosest RSSI limit any rule in this config could apply.
-
-    Pure, and importable by tests, because getting it wrong is silent: the gate
-    simply stops rejecting anything and the only symptom is a busier radio.
-
-    -127 on a CATEGORY key is the default and means "brought no limit of its
-    own, inherit one" - NOT "forwards everything". Feeding those raw into the
-    min() disabled the gate for every config that left a category unset, which
-    is the common case. Each category resolves to its effective bound first.
-    """
-
-    def bound(explicit: int, fallback: int) -> int:
-        return explicit if explicit != -127 else fallback
-
-    limits = [
-        threshold,  # DEFAULT
-        bound(mac_allowlist, floor),  # MAC: floor is its only bound
-        bound(irk, threshold),
-        bound(service_uuid, threshold),
-    ]
-    # An inheriting iBeacon rule is already covered by threshold above.
-    limits += [r for r in ibeacon_limits if r != _IBEACON_RSSI_INHERIT]
-    # A category bounded only by a disabled floor really is unbounded.
-    return -127 if -127 in limits else min(limits)
-
-
-def _min_rssi_gate_to_code(
-    var: cg.MockObj, config: ConfigType, ibeacon_limits: list[int]
-) -> None:
-    """Emit the pre-gate: anything weaker than any rule's limit dies early.
-
-    Keeps an AES resolve and a payload walk off every distant advert once a
-    fleet allows its own beacons through at a low RSSI.
-    """
-    cg.add(
-        var.set_min_rssi_gate(
-            effective_gate(
-                config[CONF_RSSI_THRESHOLD],
-                config[CONF_RSSI_FLOOR],
-                config[CONF_RSSI_MAC_ALLOWLIST],
-                config[CONF_RSSI_IRK],
-                config[CONF_RSSI_SERVICE_UUID],
-                ibeacon_limits,
-            )
-        )
-    )
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:
@@ -722,7 +661,10 @@ async def _to_code_esp32(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config) + _findmy_to_code(var, config))
+    # The pre-gate is derived from all of this in C++ (recompute_gate_), so that
+    # runtime setters keep it correct; nothing to emit for it here.
+    _ibeacon_to_code(var, config)
+    _findmy_to_code(var, config)
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
@@ -747,7 +689,10 @@ async def _to_code_ble_hub(config: ConfigType) -> None:
     cg.add(var.set_rssi_threshold(config[CONF_RSSI_THRESHOLD]))
     cg.add(var.set_rssi_floor(config[CONF_RSSI_FLOOR]))
     cg.add(var.set_rssi_mac_allowlist(config[CONF_RSSI_MAC_ALLOWLIST]))
-    _min_rssi_gate_to_code(var, config, _ibeacon_to_code(var, config) + _findmy_to_code(var, config))
+    # The pre-gate is derived from all of this in C++ (recompute_gate_), so that
+    # runtime setters keep it correct; nothing to emit for it here.
+    _ibeacon_to_code(var, config)
+    _findmy_to_code(var, config)
     cg.add(var.set_rssi_irk(config[CONF_RSSI_IRK]))
     cg.add(var.set_rssi_service_uuid(config[CONF_RSSI_SERVICE_UUID]))
     _irk_and_oui_to_code(var, config)
