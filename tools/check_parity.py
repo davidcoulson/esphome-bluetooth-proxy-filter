@@ -34,6 +34,7 @@ FORK_H = ROOT / "components" / "bluetooth_proxy" / "bluetooth_proxy.h"
 FUNCTIONS = [
     "is_espressif_oui_",
     "findmy_match_",
+    "add_ibeacon_rule",
     "ibeacon_match_",
     "payload_blocked_",
     "uuid128_matches_",

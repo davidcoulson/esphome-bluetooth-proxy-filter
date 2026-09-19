@@ -110,6 +110,36 @@ bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
   return false;
 }
 
+void BluetoothProxy::add_ibeacon_rule(const char *uuid_hex, int32_t major, int32_t minor, int8_t rssi) {
+  IBeaconRule rule{};
+  rule.rssi = rssi;
+  if (uuid_hex != nullptr) {
+    // Fail closed: a UUID that does not parse must not become "any UUID".
+    if (strlen(uuid_hex) != 32 || parse_hex(uuid_hex, 32, rule.uuid.data(), 16) != 32) {
+      ESP_LOGE(TAG, "iBeacon rule dropped: uuid is not 32 hex characters");
+      return;
+    }
+    rule.has_uuid = true;
+  }
+  if (major >= 0) {
+    rule.has_major = true;
+    rule.major = static_cast<uint16_t>(major);
+  }
+  if (minor >= 0 && rule.has_major) {
+    rule.has_minor = true;
+    rule.minor = static_cast<uint16_t>(minor);
+  }
+  if (rule.specificity() == 0)
+    return;  // names nothing - that is allow_ibeacon: true, not a rule
+  // Insert before the first strictly less specific rule: most specific first,
+  // config order preserved among equals.
+  auto pos = this->ibeacon_rules_.begin();
+  while (pos != this->ibeacon_rules_.end() && pos->specificity() >= rule.specificity())
+    ++pos;
+  this->ibeacon_rules_.insert(pos, rule);
+  this->recompute_gate_();
+}
+
 bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *limit_out) const {
   // Walks the AD structures looking for an iBeacon (Apple company id, subtype
   // 0x02) that one of the configured filters accepts. Writes that filter's RSSI
@@ -134,26 +164,23 @@ bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *l
           *limit_out = this->ibeacon_any_rssi_;
           return true;
         }
-        // Only a complete iBeacon carries major/minor, so a truncated one
-        // cannot be matched against a filter.
+        // Only a complete iBeacon carries uuid/major/minor, so a truncated one
+        // cannot be matched against a rule.
         if (field_len < 26)
           return false;
+        const uint8_t *uuid = &data[i + 6];
         const uint16_t major = (static_cast<uint16_t>(data[i + 22]) << 8) | data[i + 23];
         const uint16_t minor = (static_cast<uint16_t>(data[i + 24]) << 8) | data[i + 25];
-        // Exact major+minor wins over a whole-major rule, so a single probe can
-        // be given its own limit inside a fleet that shares one.
-        const uint32_t want = (static_cast<uint32_t>(major) << 16) | minor;
-        for (const auto &pr : this->ibeacon_pairs_) {
-          if (pr.key == want) {
-            *limit_out = pr.rssi;
-            return true;
-          }
-        }
-        for (const auto &mj : this->ibeacon_majors_) {
-          if (mj.key == major) {
-            *limit_out = mj.rssi;
-            return true;
-          }
+        // Sorted most-specific-first, so the first hit is the one that wins.
+        for (const auto &rule : this->ibeacon_rules_) {
+          if (rule.has_minor && rule.minor != minor)
+            continue;
+          if (rule.has_major && rule.major != major)
+            continue;
+          if (rule.has_uuid && memcmp(uuid, rule.uuid.data(), 16) != 0)
+            continue;
+          *limit_out = rule.rssi;
+          return true;
         }
         return false;
       }
@@ -401,13 +428,9 @@ void BluetoothProxy::recompute_gate_() {
   // A rule with its own RSSI overrides the floor as well, so it is NOT floored.
   if (this->allow_ibeacon_ && this->ibeacon_any_rssi_ != IBEACON_RSSI_INHERIT)
     loosen(this->ibeacon_any_rssi_);
-  for (const auto &mj : this->ibeacon_majors_) {
-    if (mj.rssi != IBEACON_RSSI_INHERIT)
-      loosen(mj.rssi);
-  }
-  for (const auto &pr : this->ibeacon_pairs_) {
-    if (pr.rssi != IBEACON_RSSI_INHERIT)
-      loosen(pr.rssi);
+  for (const auto &rule : this->ibeacon_rules_) {
+    if (rule.rssi != IBEACON_RSSI_INHERIT)
+      loosen(rule.rssi);
   }
   if (this->allow_findmy_ && this->findmy_rssi_ != IBEACON_RSSI_INHERIT)
     loosen(this->findmy_rssi_);
@@ -518,12 +541,18 @@ void BluetoothProxy::setup() {
     ESP_LOGCONFIG(TAG, "Absolute RSSI floor %d dB; applies to allowlisted devices too", this->rssi_floor_);
   if (this->allow_ibeacon_) {
     ESP_LOGCONFIG(TAG, "All iBeacons exempt from manufacturer_blocklist (RSSI limit %d dB)", this->ibeacon_any_rssi_);
-  } else if (!this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty()) {
-    for (const auto &mj : this->ibeacon_majors_)
-      ESP_LOGCONFIG(TAG, "iBeacon major %u (any minor): RSSI limit %d dB", static_cast<unsigned>(mj.key), mj.rssi);
-    for (const auto &pr : this->ibeacon_pairs_)
-      ESP_LOGCONFIG(TAG, "iBeacon major %u minor %u: RSSI limit %d dB", static_cast<unsigned>(pr.key >> 16),
-                    static_cast<unsigned>(pr.key & 0xFFFF), pr.rssi);
+  } else {
+    for (const auto &rule : this->ibeacon_rules_) {
+      if (rule.has_uuid) {
+        ESP_LOGCONFIG(
+            TAG, "iBeacon rule: uuid %02X%02X%02X%02X-...-%02X%02X%02X%02X, major %d, minor %d: RSSI limit %d dB",
+            rule.uuid[0], rule.uuid[1], rule.uuid[2], rule.uuid[3], rule.uuid[12], rule.uuid[13], rule.uuid[14],
+            rule.uuid[15], rule.has_major ? rule.major : -1, rule.has_minor ? rule.minor : -1, rule.rssi);
+      } else {
+        ESP_LOGCONFIG(TAG, "iBeacon rule: ANY uuid, major %d, minor %d: RSSI limit %d dB",
+                      rule.has_major ? rule.major : -1, rule.has_minor ? rule.minor : -1, rule.rssi);
+      }
+    }
   }
   if (this->min_rssi_gate_ != -127)
     ESP_LOGCONFIG(TAG, "Pre-gate drops anything below %d dB", this->min_rssi_gate_);
@@ -656,8 +685,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // own RSSI limit and should not be measured against the fleet threshold.
   int8_t ibeacon_limit = IBEACON_RSSI_INHERIT;
   bool ibeacon_has_limit = false;
-  if (category == CAT_DEFAULT &&
-      (this->allow_ibeacon_ || !this->ibeacon_majors_.empty() || !this->ibeacon_pairs_.empty()) &&
+  if (category == CAT_DEFAULT && (this->allow_ibeacon_ || !this->ibeacon_rules_.empty()) &&
       this->ibeacon_match_(raw.data, raw.data_len, &ibeacon_limit)) {
     category = CAT_IBEACON;
     // A rule with no rssi of its own INHERITS: it only exempts the advert from
