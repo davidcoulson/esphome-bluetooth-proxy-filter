@@ -80,6 +80,7 @@ CONF_DROP_NON_RESOLVABLE = "drop_non_resolvable"
 CONF_ALLOW_HOMEKIT = "allow_homekit"
 CONF_ALLOW_IBEACON = "allow_ibeacon"
 CONF_ALLOW_FINDMY = "allow_findmy"
+CONF_UUID = "uuid"
 CONF_MAJOR = "major"
 CONF_MINOR = "minor"
 CONF_RSSI = "rssi"
@@ -208,23 +209,46 @@ def _esp32_config_schema() -> cv.All:
 # Mirrors BluetoothProxy::IBEACON_RSSI_INHERIT.
 _IBEACON_RSSI_INHERIT = -128
 
-_IBEACON_FILTER_SCHEMA = cv.Schema(
-    {
-        cv.Required(CONF_MAJOR): cv.uint16_t,
-        cv.Optional(CONF_MINOR): cv.ensure_list(cv.uint16_t),
-        # This filter's own RSSI limit, overriding BOTH rssi_threshold and
-        # rssi_floor for adverts it matches. -127 forwards at any strength.
-        # Probe-to-probe ranging wants exactly the weak cross-room readings the
-        # fleet threshold exists to discard, and only for the beacons ranging.
-        # Omitted = inherit: the rule exempts the advert from
-        # manufacturer_blocklist and nothing else, so rssi_threshold and
-        # rssi_floor still apply. Set it explicitly to override them - -127
-        # forwards at any strength.
-        cv.Optional(CONF_RSSI, default=_IBEACON_RSSI_INHERIT): cv.Any(
-            cv.int_range(min=-127, max=0),
-            cv.int_range(min=_IBEACON_RSSI_INHERIT, max=_IBEACON_RSSI_INHERIT),
-        ),
-    }
+
+def _validate_ibeacon_uuid(value: str) -> str:
+    """An iBeacon proximity UUID, normalised to 32 lowercase hex characters."""
+    return cv.uuid(value).hex
+
+
+def _validate_ibeacon_rule(rule: ConfigType) -> ConfigType:
+    if CONF_UUID not in rule and CONF_MAJOR not in rule:
+        raise cv.Invalid(
+            f"An allow_ibeacon rule needs a '{CONF_UUID}', a '{CONF_MAJOR}', or "
+            f"both. To exempt every iBeacon, use 'allow_ibeacon: true'."
+        )
+    if CONF_MINOR in rule and CONF_MAJOR not in rule:
+        raise cv.Invalid(
+            f"'{CONF_MINOR}' is only meaningful inside a '{CONF_MAJOR}'",
+            path=[CONF_MINOR],
+        )
+    return rule
+
+
+_IBEACON_FILTER_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            # Whose beacon it is. major/minor are small integers every vendor
+            # starts counting from 1, so a rule without a uuid admits anybody's
+            # beacon that was left on its defaults - at this rule's RSSI limit.
+            cv.Optional(CONF_UUID): _validate_ibeacon_uuid,
+            cv.Optional(CONF_MAJOR): cv.uint16_t,
+            cv.Optional(CONF_MINOR): cv.ensure_list(cv.uint16_t),
+            # This filter's own RSSI limit, overriding BOTH rssi_threshold and
+            # rssi_floor for adverts it matches. Omitted = inherit: the rule exempts
+            # the advert from manufacturer_blocklist and nothing else, so the
+            # distance rules still apply. -127 forwards at any strength.
+            cv.Optional(CONF_RSSI, default=_IBEACON_RSSI_INHERIT): cv.Any(
+                cv.int_range(min=-127, max=0),
+                cv.int_range(min=_IBEACON_RSSI_INHERIT, max=_IBEACON_RSSI_INHERIT),
+            ),
+        }
+    ),
+    _validate_ibeacon_rule,
 )
 
 
@@ -377,14 +401,12 @@ def _ibeacon_to_code(var: cg.MockObj, config: ConfigType) -> None:
     # A list scopes the exemption, so the unscoped flag stays off.
     cg.add(var.set_allow_ibeacon(False))
     for entry in value:
-        major = entry[CONF_MAJOR]
+        # nullptr / -1 mean "any". The C++ side orders rules most-specific-first.
+        uuid = entry.get(CONF_UUID, cg.nullptr)
+        major = entry.get(CONF_MAJOR, -1)
         rssi = entry[CONF_RSSI]
-        minors = entry.get(CONF_MINOR)
-        if not minors:
-            cg.add(var.add_ibeacon_major(major, rssi))
-            continue
-        for minor in minors:
-            cg.add(var.add_ibeacon_major_minor(major, minor, rssi))
+        for minor in entry.get(CONF_MINOR) or [-1]:
+            cg.add(var.add_ibeacon_rule(uuid, major, minor, rssi))
 
 
 def _irk_and_oui_to_code(var: cg.MockObj, config: ConfigType) -> None:

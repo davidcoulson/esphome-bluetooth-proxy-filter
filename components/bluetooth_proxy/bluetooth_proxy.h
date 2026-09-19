@@ -254,13 +254,23 @@ class BluetoothProxy final : public Component {
     this->ibeacon_any_rssi_ = rssi;
     this->recompute_gate_();
   }
-  void add_ibeacon_major(uint16_t major, int8_t rssi) {
-    this->ibeacon_majors_.push_back({major, rssi});
-    this->recompute_gate_();
-  }
+  /// One iBeacon rule. Any of uuid / major / minor may be left out (nullptr /
+  /// -1), but not all three, and a minor needs a major. A rule matches when
+  /// every field it names matches; when several match, the most specific wins
+  /// (minor over major over uuid-only, a uuid-scoped rule over an unscoped one),
+  /// so a single probe can be given its own limit inside a fleet that shares one.
+  ///
+  /// SCOPE RULES BY UUID. major/minor are small integers every vendor starts
+  /// counting from 1, so `major: 1` on its own admits anybody's beacon that was
+  /// left on its defaults - at this rule's RSSI limit, which usually overrides
+  /// the floor. The UUID is the only field that identifies whose beacon it is.
+  ///
+  /// uuid_hex is 32 hex characters, canonical order (as transmitted). A value
+  /// that does not parse drops the rule rather than widening it to "any UUID".
+  void add_ibeacon_rule(const char *uuid_hex, int32_t major, int32_t minor, int8_t rssi);
+  void add_ibeacon_major(uint16_t major, int8_t rssi) { this->add_ibeacon_rule(nullptr, major, -1, rssi); }
   void add_ibeacon_major_minor(uint16_t major, uint16_t minor, int8_t rssi) {
-    this->ibeacon_pairs_.push_back({(static_cast<uint32_t>(major) << 16) | minor, rssi});
-    this->recompute_gate_();
+    this->add_ibeacon_rule(nullptr, major, minor, rssi);
   }
   /// Cheap pre-gate: the loosest RSSI limit any rule in this config could
   /// apply. Anything weaker is dropped before the categoriser runs, so a fleet
@@ -640,20 +650,21 @@ class BluetoothProxy final : public Component {
   std::vector<uint64_t> mac_blocklist_;
 
   std::vector<uint16_t> service_uuid_allowlist_;
-  // key + its own RSSI limit. Two lists rather than one keyed union so the
-  // exact-pair lookup stays a plain uint32 compare.
+  // Kept sorted most-specific-first (see add_ibeacon_rule), so the matcher can
+  // stop at the first hit.
   struct IBeaconRule {
-    uint32_t key;  // major, or (major << 16) | minor
-    int8_t rssi;   // -127 = any strength
+    std::array<uint8_t, 16> uuid;
+    uint16_t major;
+    uint16_t minor;
+    int8_t rssi;  // IBEACON_RSSI_INHERIT = no limit of its own
+    bool has_uuid;
+    bool has_major;
+    bool has_minor;
+    uint8_t specificity() const {
+      return (this->has_minor ? 4 : 0) + (this->has_major ? 2 : 0) + (this->has_uuid ? 1 : 0);
+    }
   };
-  struct IBeaconMajorRule {
-    uint16_t key;
-    int8_t rssi;
-  };
-  std::vector<IBeaconMajorRule> ibeacon_majors_;
-  std::vector<IBeaconRule> ibeacon_pairs_;
-  // Compile-time 32-hex-char blobs, parsed into service_uuid128_ during setup()
-  // and then dropped - same pattern as irks_hex_.
+  std::vector<IBeaconRule> ibeacon_rules_;
   std::vector<const char *> service_uuid128_hex_;
   std::vector<std::array<uint8_t, 16>> service_uuid128_;
   // Blocked Bluetooth SIG company identifiers (AD type 0xFF).
