@@ -79,7 +79,7 @@ The two entries are there for **different** reasons, which is worth understandin
 | | Matter `0xFFF6` | Improv |
 |---|---|---|
 | Address | Rotating private | Public (Espressif OUI) |
-| Blocked by address-type tests? | **Yes** — this is the only way through | No |
+| Blocked by address-type tests? | **Yes** — this is the only way through (both the non-resolvable and, since v1.7.0, the unresolved-RPA test) | No |
 | Blocked by RSSI threshold? | Yes, when far | **Yes** — the only real exposure |
 
 `allow_espressif` does **not** rescue Improv: it is consulted only in the unresolved-RPA test, never

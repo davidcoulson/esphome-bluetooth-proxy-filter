@@ -29,7 +29,17 @@ exactly like upstream.
 | `allow_findmy` | Exempt Apple FindMy (Offline Finding) advertisements — AirTags, AirPods, licensed third-party tags — from `manufacturer_blocklist`: `true`, or `{rssi: -85}` to give them their own limit (default `false`) |
 
 It also exposes advertisement counters (`get_adv_forwarded()`, `get_adv_dropped()`,
-`get_adv_dropped_rpa()`) so the effect is measurable per-proxy rather than guessed.
+`get_adv_dropped_rpa()`, `get_adv_forwarded_irk()`) so the effect is measurable per-proxy rather
+than guessed. `get_adv_forwarded_irk()` is the one that tells a wrong IRK from an absent phone:
+a key that never matches leaves it flat while its owner's adverts are counted as somebody
+else's and dropped.
+
+> **This fork is on its way out.** ESPHome 2026.10 ships an `AdvertisementFilter` hook in stock
+> `bluetooth_proxy`, and
+> [esphome-ble-advert-filter](https://github.com/davidcoulson/esphome-ble-advert-filter) is
+> this same filter built on it — nothing to re-sync on every release. The two are kept
+> textually identical (`tools/check_parity.py`, enforced in CI), with the same options and
+> methods. See its README for the (mechanical) migration.
 
 ## Usage
 
@@ -62,11 +72,15 @@ RSSI limit. This is what makes the limits independent: any category can be loose
 stricter than any other.
 
 1. `mac_blocklist` hit → drop, ahead of every allow rule
-2. RSSI below `rssi_floor` → drop. Global, applies to allowlisted devices too
+2. RSSI below the pre-gate → drop. Global, applies to allowlisted devices too
 3. Categorise, first hit wins, cheapest test first:
-   `mac_allowlist` → `MAC` · RPA resolving to an IRK → `IRK`
-   (an RPA resolving to none → drop) · allowlisted service UUID → `UUID`
+   `mac_allowlist` → `MAC` · RPA resolving to an IRK → `IRK` · matched iBeacon → `IBEACON`
+   · FindMy (with `allow_findmy`) → `FINDMY` · allowlisted service UUID → `UUID`
    · anything else → `DEFAULT`
+   An RPA that resolved to **none** of your IRKs is dropped here, regardless of RSSI — but
+   only if no other rule claimed it. It used to be dropped before the payload rules ran,
+   which meant `service_uuid_allowlist` could not rescue a device pairing from a resolvable
+   address, the case it exists for.
 4. RSSI below **that category's** limit → drop
 5. `allowlist_exclusive` and `DEFAULT` → drop
 6. Non-resolvable private address (with `drop_non_resolvable`), unprotected → drop
@@ -225,13 +239,19 @@ value like `-95` unless you genuinely want everything.
 
 ### The pre-gate
 
-Every advert is measured against *some* limit, so anything weaker than the most
-permissive limit in the config is dropped before categorisation runs. That keeps
-an AES resolve and a payload walk off every distant advert in the neighbourhood
-once your own beacons are allowed through at a very low RSSI. It is computed
-automatically from `rssi_threshold`, `rssi_floor` and every per-category limit;
-a `-127` anywhere disables it, correctly — if something is allowed through at
-any strength, nothing can be rejected on RSSI alone.
+Every advert is measured against *some* limit, so anything weaker than the most permissive
+limit in the config is dropped before categorisation runs. That keeps an AES resolve and a
+payload walk off every distant advert once your own beacons are allowed through at a low
+RSSI. It is derived automatically from `rssi_threshold`, `rssi_floor`, every per-category
+limit and every rule that brings its own — but only for categories something can actually
+land in: with no `mac_allowlist` there is no allowlisted advert for the gate to protect, so
+that category does not hold it open. A reachable category with no bound at all disables it,
+correctly — if something is allowed through at any strength, nothing can be rejected on RSSI
+alone.
+
+It is recomputed whenever a limit or list changes, **including at runtime**. It used to be
+computed once at codegen, so a Home Assistant number lowering `rssi_threshold` below the
+compiled gate silently stopped working. `get_min_rssi_gate()` reports the current value.
 
 `minor` is nested under `major` because that is the BLE data model — a minor is
 only meaningful inside a major — and flat keys cannot express "major 1 minor 7
@@ -258,6 +278,20 @@ On a ~30-proxy Home Assistant install:
 Packet count falls much less than byte count (~14% vs ~38%), because the proxy batches
 up to 16 advertisements per packet — dropping advertisements mostly makes batches
 emptier rather than removing packets.
+
+## Tests
+
+```bash
+tests/run.sh
+```
+
+This fork's `bluetooth_proxy.cpp` cannot be compiled off-device — it drags in the whole API
+server — so it is tested by proxy. `tests/run.sh` first runs `tools/check_parity.py`, which
+fails if any filter function, the filter chain, the OUI table or the public API differs from
+[esphome-ble-advert-filter](https://github.com/davidcoulson/esphome-ble-advert-filter), then
+runs **that** repo's suite, which compiles the real filter source under AddressSanitizer and
+UBSan. If the text matches, the fork's logic is the logic that was tested. This replaced
+hand-transcribed copies of three functions, which could drift from the source they described.
 
 ## Caveats
 
