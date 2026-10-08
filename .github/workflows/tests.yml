@@ -12,15 +12,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: davidcoulson/esphome-ble-advert-filter
-          # The matching branch if there is one (a change that spans both repos
-          # is developed under the same branch name), otherwise main.
-          ref: ${{ github.head_ref || github.ref_name }}
-          path: hook
-        continue-on-error: true
-        id: hook_branch
-      - if: steps.hook_branch.outcome != 'success'
-        uses: actions/checkout@v4
-        with:
-          repository: davidcoulson/esphome-ble-advert-filter
+          # Frozen: this fork matches esphome-ble-advert-filter v1.7.0, the
+          # last release before that repo moved on (v2.0.0 adds an RPA cache,
+          # sensor/number platforms and actions that exist only there).
+          ref: v1.7.0
           path: hook
       - run: HOOK_REPO=hook tests/run.sh

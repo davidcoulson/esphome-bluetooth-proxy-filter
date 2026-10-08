@@ -1,5 +1,19 @@
 # esphome-bluetooth-proxy-filter
 
+> [!IMPORTANT]
+> **Superseded on ESPHome 2026.10 and later by
+> [esphome-ble-advert-filter](https://github.com/davidcoulson/esphome-ble-advert-filter).**
+> ESPHome 2026.10 ships an advertisement filter hook in stock `bluetooth_proxy`
+> ([esphome/esphome#19220](https://github.com/esphome/esphome/pull/19220)), and that
+> component plugs the same filter into it, so there is no fork of a core component to update on
+> every release. Same options, same methods; moving is mechanical, see its
+> [migration guide](https://github.com/davidcoulson/esphome-ble-advert-filter/blob/main/docs/migrating.md).
+>
+> This fork stays for ESPHome 2026.9 and earlier and is **frozen at v1.7.0**, which
+> matches esphome-ble-advert-filter v1.7.0. New features (an RPA verdict cache, sensor
+> and number platforms, `set_irks`/`clear_irks` actions) land only in
+> esphome-ble-advert-filter v2.0.0+.
+
 A drop-in fork of ESPHome's core `bluetooth_proxy` component that can **filter BLE
 advertisements on the device**, before they are queued for the API and cross the network.
 
