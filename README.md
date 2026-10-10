@@ -9,10 +9,10 @@
 > every release. Same options, same methods; moving is mechanical, see its
 > [migration guide](https://github.com/davidcoulson/esphome-ble-advert-filter/blob/main/docs/migrating.md).
 >
-> This fork stays for ESPHome 2026.9 and earlier and is **frozen at v1.7.0**, which
-> matches esphome-ble-advert-filter v1.7.0. New features (an RPA verdict cache, sensor
-> and number platforms, `set_irks`/`clear_irks` actions) land only in
-> esphome-ble-advert-filter v2.0.0+.
+> This fork stays for ESPHome 2026.9 and earlier. Its v1.8.0 filter matches
+> esphome-ble-advert-filter v2.0.2 (fixes and the RPA verdict cache are ported here;
+> `tools/check_parity.py` checks it). The sensor and number platforms and the
+> `set_irks`/`clear_irks` actions exist only in esphome-ble-advert-filter.
 
 A drop-in fork of ESPHome's core `bluetooth_proxy` component that can **filter BLE
 advertisements on the device**, before they are queued for the API and cross the network.
