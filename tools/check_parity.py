@@ -44,6 +44,8 @@ FUNCTIONS = [
     "set_irks",
     "recompute_gate_",
     "irk_matches_",
+    "irk_matches_cached_",
+    "clear_rpa_cache_",
 ]
 
 CHAIN_START = "  // 1. Ignored outright"

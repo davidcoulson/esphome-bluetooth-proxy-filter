@@ -96,8 +96,12 @@ bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
-    if (field_len == 0)
-      break;
+    if (field_len == 0) {
+      // Padding, not the end: ESPHome passes the advert and its scan response
+      // as one buffer, so stopping here would skip the whole scan response.
+      i++;
+      continue;
+    }
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
@@ -153,8 +157,12 @@ bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *l
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
-    if (field_len == 0)
-      break;
+    if (field_len == 0) {
+      // Padding, not the end: ESPHome passes the advert and its scan response
+      // as one buffer, so stopping here would skip the whole scan response.
+      i++;
+      continue;
+    }
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
@@ -165,9 +173,12 @@ bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *l
           return true;
         }
         // Only a complete iBeacon carries uuid/major/minor, so a truncated one
-        // cannot be matched against a rule.
-        if (field_len < 26)
-          return false;
+        // cannot be matched against a rule - but a later one in the same
+        // payload (e.g. in the scan response) still can.
+        if (field_len < 26) {
+          i += field_len + 1;
+          continue;
+        }
         const uint8_t *uuid = &data[i + 6];
         const uint16_t major = (static_cast<uint16_t>(data[i + 22]) << 8) | data[i + 23];
         const uint16_t minor = (static_cast<uint16_t>(data[i + 24]) << 8) | data[i + 25];
@@ -182,7 +193,7 @@ bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *l
           *limit_out = rule.rssi;
           return true;
         }
-        return false;
+        // No rule for this one; keep looking for another iBeacon.
       }
     }
     i += field_len + 1;
@@ -197,8 +208,12 @@ bool BluetoothProxy::payload_blocked_(const uint8_t *data, uint16_t len) const {
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
-    if (field_len == 0)
-      break;  // Zero length terminates the payload.
+    if (field_len == 0) {
+      // Padding, not the end: ESPHome passes the advert and its scan response
+      // as one buffer, so stopping here would skip the whole scan response.
+      i++;
+      continue;
+    }
     // Reject a structure that claims to run past the buffer (truncated packet).
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
@@ -289,8 +304,12 @@ bool BluetoothProxy::payload_has_allowed_service_uuid_(const uint8_t *data, uint
   uint16_t i = 0;
   while (i < len) {
     const uint8_t field_len = data[i];
-    if (field_len == 0)
-      break;  // Zero length terminates the payload.
+    if (field_len == 0) {
+      // Padding, not the end: ESPHome passes the advert and its scan response
+      // as one buffer, so stopping here would skip the whole scan response.
+      i++;
+      continue;
+    }
     // Reject a structure that claims to run past the buffer (truncated packet).
     if (static_cast<uint32_t>(i) + 1u + field_len > len)
       break;
@@ -388,6 +407,7 @@ int BluetoothProxy::set_irks(const std::string &text) {
     return -1;
   }
   this->irks_ = std::move(parsed);
+  this->clear_rpa_cache_();
   this->recompute_gate_();
   ESP_LOGI(TAG, "Loaded %u IRK(s) at runtime", static_cast<unsigned>(this->irks_.size()));
   return static_cast<int>(this->irks_.size());
@@ -454,6 +474,34 @@ bool BluetoothProxy::irk_matches_(uint64_t addr) const {
   return false;
 }
 
+bool BluetoothProxy::irk_matches_cached_(uint64_t addr) {
+  // An RPA is stable for its rotation period (about 15 minutes on phones) and
+  // is advertised several times a second meanwhile, so nearly every lookup is a
+  // repeat. Without this, each repeat from somebody else's phone re-runs one
+  // AES key schedule and block per loaded key - the whole cost of IRK gating.
+  constexpr uint64_t ADDR_MASK = 0xFFFFFFFFFFFFULL;
+  constexpr uint64_t OURS = 1ULL << 63;
+  if (this->rpa_cache_.empty())
+    this->rpa_cache_.assign(RPA_CACHE_SIZE, 0);
+  for (const uint64_t entry : this->rpa_cache_) {
+    if (entry != 0 && (entry & ADDR_MASK) == addr)
+      return (entry & OURS) != 0;
+  }
+  this->irk_resolutions_++;
+  const bool ours = this->irk_matches_(addr);
+  this->rpa_cache_[this->rpa_cache_next_] = (addr & ADDR_MASK) | (ours ? OURS : 0);
+  this->rpa_cache_next_ = static_cast<uint8_t>((this->rpa_cache_next_ + 1) % RPA_CACHE_SIZE);
+  return ours;
+}
+
+void BluetoothProxy::clear_rpa_cache_() {
+  // Every verdict was computed against the old key list, so all of them go -
+  // a cached "not ours" would otherwise keep hiding a phone whose key was
+  // just added.
+  std::fill(this->rpa_cache_.begin(), this->rpa_cache_.end(), 0);
+  this->rpa_cache_next_ = 0;
+}
+
 // The neutral enum's values are the wire values.
 static_assert(static_cast<uint32_t>(ble_device_base::ScannerState::IDLE) == api::enums::BLUETOOTH_SCANNER_STATE_IDLE);
 static_assert(static_cast<uint32_t>(ble_device_base::ScannerState::STARTING) ==
@@ -517,6 +565,7 @@ void BluetoothProxy::setup() {
         this->irks_.push_back(irk);
     }
     this->irks_hex_ = nullptr;
+    this->clear_rpa_cache_();
     ESP_LOGCONFIG(TAG, "Loaded %u IRK(s); unmatched RPAs will be dropped", static_cast<unsigned>(this->irks_.size()));
   }
 
@@ -528,8 +577,16 @@ void BluetoothProxy::setup() {
       std::array<uint8_t, 16> uuid{};
       // Validation already guaranteed 32 hex chars; skip anything that somehow
       // fails to parse rather than installing a half-filled UUID.
-      if (parse_hex(hex, 32, uuid.data(), 16) == 32)
-        this->service_uuid128_.push_back(uuid);
+      if (parse_hex(hex, 32, uuid.data(), 16) != 32)
+        continue;
+      // 0000xxxx-0000-1000-8000-00805f9b34fb is the 16-bit UUID xxxx written
+      // out in full. Devices advertise the short form, so match that too -
+      // the reverse (short configured, long advertised) already works in
+      // uuid128_matches_().
+      if (memcmp(uuid.data(), BT_BASE_UUID, 2) == 0 && memcmp(uuid.data() + 4, BT_BASE_UUID + 4, 12) == 0) {
+        this->service_uuid_allowlist_.push_back(static_cast<uint16_t>((uuid[2] << 8) | uuid[3]));
+      }
+      this->service_uuid128_.push_back(uuid);
     }
     this->service_uuid128_hex_.clear();
     this->service_uuid128_hex_.shrink_to_fit();
@@ -612,6 +669,12 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // bulk of distant noise never reaches the categoriser at all.
   // ---------------------------------------------------------------------
 
+  // The payload walkers below index `data` directly. ESPHome always passes a
+  // pointer into a scan buffer, but treat a null one as an empty payload
+  // rather than trust every producer of RawAdvertisement to keep doing so.
+  const uint8_t *const data = raw.data;
+  const uint16_t data_len = raw.data != nullptr ? raw.data_len : 0;
+
   // 1. Ignored outright, ahead of every allow rule: the point of this list is
   //    "this proxy does not handle this device", which a broader allowlist
   //    entry must not be able to override.
@@ -629,12 +692,13 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   //    tracker triangulate, it misleads it. Deliberately first among the
   //    distance tests: it is the cheapest, and it keeps the categoriser below
   //    from running on traffic no category would have kept anyway.
+  //    -127 (default) disables it.
   //    This gate is the LOOSEST limit any rule could apply (computed at codegen
   //    from rssi_floor, rssi_threshold and every per-category limit), not
   //    rssi_floor itself. rssi_floor is applied per-category below, because a
   //    category with an explicit limit is allowed to override it - that is what
   //    lets our own beacons through at any strength while tracked tags stay
-  //    bounded at -90.
+  //    bounded at the floor.
   if (this->min_rssi_gate_ != -127 && raw.rssi < this->min_rssi_gate_) {
     this->adv_dropped_++;
     this->adv_dropped_gate_++;
@@ -661,9 +725,8 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // An RPA is identified from two bits of the address, so the expensive part
   // (irk_matches_, which runs AES per key) is reached only by actual RPAs.
   bool unresolved_rpa = false;
-  if (category == CAT_DEFAULT && !this->irks_.empty() && this->address_is_rpa_(raw.address, raw.addr_type) &&
-      !(this->allow_espressif_ && this->is_espressif_oui_(raw.address))) {
-    if (this->irk_matches_(raw.address)) {
+  if (category == CAT_DEFAULT && !this->irks_.empty() && this->address_is_rpa_(raw.address, raw.addr_type)) {
+    if (this->irk_matches_cached_(raw.address)) {
       // One of ours. Protected so the payload filters below cannot discard it -
       // our phones and watches advertise Apple manufacturer data, which a
       // manufacturer_blocklist entry would otherwise match.
@@ -675,7 +738,14 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       // advance, and a device in pairing mode may well advertise from an RPA.
       // Dropping here made service_uuid_allowlist unable to rescue one, which
       // is the case it is documented to cover. Decided after categorisation.
-      unresolved_rpa = true;
+      //
+      // allow_espressif spares an RPA whose random part happens to look like an
+      // Espressif OUI. It is a safety net, not load-bearing: ESPHome advertises
+      // on the public MAC, which is never an RPA. It is applied only AFTER the
+      // IRK test: before it, a phone whose rotating address landed on one of
+      // those prefixes (~1 rotation in 58,000) skipped resolution and was
+      // dropped as somebody else's despite a correct key.
+      unresolved_rpa = !(this->allow_espressif_ && this->is_espressif_oui_(raw.address));
     }
   }
 
@@ -686,7 +756,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   int8_t ibeacon_limit = IBEACON_RSSI_INHERIT;
   bool ibeacon_has_limit = false;
   if (category == CAT_DEFAULT && (this->allow_ibeacon_ || !this->ibeacon_rules_.empty()) &&
-      this->ibeacon_match_(raw.data, raw.data_len, &ibeacon_limit)) {
+      this->ibeacon_match_(data, data_len, &ibeacon_limit)) {
     category = CAT_IBEACON;
     // A rule with no rssi of its own INHERITS: it only exempts the advert from
     // the manufacturer blocklist and leaves the distance rules alone. Omitting
@@ -699,7 +769,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // subtype exempted from the Apple blocklist, optionally with its own RSSI
   // limit), same place in the chain.
   bool findmy_has_limit = false;
-  if (category == CAT_DEFAULT && this->allow_findmy_ && this->findmy_match_(raw.data, raw.data_len)) {
+  if (category == CAT_DEFAULT && this->allow_findmy_ && this->findmy_match_(data, data_len)) {
     category = CAT_FINDMY;
     findmy_has_limit = (this->findmy_rssi_ != IBEACON_RSSI_INHERIT);
     protected_addr = true;
@@ -710,7 +780,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   // pairing mode advertises from a rotating private address, which the
   // non-resolvable test below would otherwise discard.
   if (category == CAT_DEFAULT && (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty()) &&
-      this->payload_has_allowed_service_uuid_(raw.data, raw.data_len)) {
+      this->payload_has_allowed_service_uuid_(data, data_len)) {
     category = CAT_UUID;
     protected_addr = true;
     this->adv_allowed_service_uuid_++;
@@ -801,7 +871,7 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
 
   // 7. Payload-based filters last: by here most traffic has already gone.
   if (!protected_addr && (!this->name_blocklist_.empty() || !this->manufacturer_blocklist_.empty()) &&
-      this->payload_blocked_(raw.data, raw.data_len)) {
+      this->payload_blocked_(data, data_len)) {
     this->adv_dropped_++;
     ESP_LOGVV(TAG, "Dropping packet from %012" PRIX64 ": blocklisted name or manufacturer", raw.address);
     return;
