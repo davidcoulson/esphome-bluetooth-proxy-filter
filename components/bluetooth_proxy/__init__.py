@@ -237,11 +237,16 @@ _IBEACON_FILTER_SCHEMA = cv.All(
             # beacon that was left on its defaults - at this rule's RSSI limit.
             cv.Optional(CONF_UUID): _validate_ibeacon_uuid,
             cv.Optional(CONF_MAJOR): cv.uint16_t,
-            cv.Optional(CONF_MINOR): cv.ensure_list(cv.uint16_t),
+            # At least one: an empty list would silently mean "any minor".
+            cv.Optional(CONF_MINOR): cv.All(
+                cv.ensure_list(cv.uint16_t), cv.Length(min=1)
+            ),
             # This filter's own RSSI limit, overriding BOTH rssi_threshold and
-            # rssi_floor for adverts it matches. Omitted = inherit: the rule exempts
-            # the advert from manufacturer_blocklist and nothing else, so the
-            # distance rules still apply. -127 forwards at any strength.
+            # rssi_floor for adverts it matches. Omitted = inherit: the distance
+            # rules still apply. Either way a matched iBeacon is protected like
+            # an allowlisted device: exempt from manufacturer_blocklist,
+            # name_blocklist, drop_non_resolvable and the unresolved-RPA drop.
+            # -127 forwards at any strength.
             cv.Optional(CONF_RSSI, default=_IBEACON_RSSI_INHERIT): cv.Any(
                 cv.int_range(min=-127, max=0),
                 cv.int_range(min=_IBEACON_RSSI_INHERIT, max=_IBEACON_RSSI_INHERIT),
@@ -252,11 +257,12 @@ _IBEACON_FILTER_SCHEMA = cv.All(
 )
 
 
-# allow_findmy: `true` exempts Apple FindMy adverts (Offline Finding subtype
+# allow_findmy: `true` protects Apple FindMy adverts (Offline Finding subtype
 # 0x12, and AirPods proximity-pairing subtype 0x07, which AirPods near their
-# owner send from the same rotated address) from manufacturer_blocklist and
-# nothing more; a mapping with `rssi`
-# gives the rule its own limit, resolved exactly like an iBeacon rule's
+# owner send from the same rotated address) like an allowlisted device: exempt
+# from manufacturer_blocklist, name_blocklist, drop_non_resolvable and the
+# unresolved-RPA drop. A mapping with `rssi` gives the rule its own limit,
+# resolved exactly like an iBeacon rule's
 # (overrides rssi_threshold and rssi_floor for the adverts it matches).
 _FINDMY_SCHEMA = cv.Schema(
     {

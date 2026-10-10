@@ -4,18 +4,18 @@
 # esphome-ble-advert-filter's (tools/check_parity.py), then run THAT repo's
 # suite, which compiles the real filter source under ASan/UBSan.
 #
-# This fork is frozen at esphome-ble-advert-filter v1.7.0, so parity is only
+# This fork's filter matches esphome-ble-advert-filter v2.0.2, so parity is only
 # meaningful against that exact commit. A newer or locally modified checkout
 # could pass here without saying anything about the code this fork ships, so
 # the script refuses one.
 #
-#   tests/run.sh                                  # clones v1.7.0
-#   HOOK_REPO=/path/to/esphome-ble-advert-filter tests/run.sh   # must be at v1.7.0, clean
+#   tests/run.sh                                  # clones v2.0.2
+#   HOOK_REPO=/path/to/esphome-ble-advert-filter tests/run.sh   # must be at v2.0.2, clean
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PARITY_TAG=v1.7.0
-PARITY_COMMIT=256d61208f52ca48793736b379a2dcf369f8e501
+PARITY_TAG=v2.0.2
+PARITY_COMMIT=7e4713df3549d77404c37a776bb7a044281895be
 
 hook="${HOOK_REPO:-}"
 if [[ -z "$hook" ]]; then
