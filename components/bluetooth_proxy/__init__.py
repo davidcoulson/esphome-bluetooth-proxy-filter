@@ -159,6 +159,9 @@ def _esp32_config_schema() -> cv.All:
                 raise cv.Invalid(
                     "Connections can only be used if the proxy is set to active"
                 )
+            esp32_ble.consume_connection_slots(
+                len(config[CONF_CONNECTIONS]), "bluetooth_proxy"
+            )(config)
         elif config[CONF_ACTIVE]:
             connection_slots: int = config[CONF_CONNECTION_SLOTS]
             esp32_ble.consume_connection_slots(connection_slots, "bluetooth_proxy")(
@@ -490,7 +493,7 @@ _COMMON_SCHEMA_KEYS = {
     cv.Optional(CONF_RSSI_IRK, default=-127): cv.int_range(min=-127, max=0),
     cv.Optional(CONF_RSSI_SERVICE_UUID, default=-127): cv.int_range(min=-127, max=0),
     # Empty list = no IRK gating, so the default stays upstream behaviour.
-    cv.Optional(CONF_IRKS, default=[]): cv.ensure_list(_validate_irk),
+    cv.Optional(CONF_IRKS, default=[]): cv.ensure_list(cv.sensitive(_validate_irk)),
     cv.Optional(CONF_ALLOW_ESPRESSIF, default=True): cv.boolean,
     # Deliberately a blocklist, not an allowlist: most advertisements carry no
     # local name at all (phones and watches omit it), so allowlisting by name

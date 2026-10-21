@@ -9,8 +9,8 @@
 > every release. Same options, same methods; moving is mechanical, see its
 > [migration guide](https://github.com/davidcoulson/esphome-ble-advert-filter/blob/main/docs/migrating.md).
 >
-> This fork stays for ESPHome 2026.9 and earlier. Its v1.8.1 filter matches
-> esphome-ble-advert-filter v2.0.3 (fixes and the RPA verdict cache are ported here;
+> This fork stays for ESPHome 2026.9 and earlier. Its v1.8.2 filter matches
+> esphome-ble-advert-filter v2.0.4 (fixes and the RPA verdict cache are ported here;
 > `tools/check_parity.py` checks it). The sensor and number platforms and the
 > `set_irks`/`clear_irks` actions exist only in esphome-ble-advert-filter.
 
@@ -149,6 +149,13 @@ text_sensor:
     internal: true
     on_value:
       - lambda: 'id(ble_proxy).set_irks(x);'
+
+# ESPHome logs every attribute it receives at DEBUG, keys included, and
+# `internal: true` does not stop that line.
+logger:
+  logs:
+    homeassistant.text_sensor: WARN
+    text_sensor: WARN
 ```
 
 The parser takes every run of **exactly 32 hex characters** and ignores the
