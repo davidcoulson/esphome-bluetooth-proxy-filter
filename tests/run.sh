@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PARITY_TAG=v2.0.3
-PARITY_COMMIT=0bb63ba740c9488a5aaeaccbdc61c83caf6b0096
+PARITY_COMMIT=aeaeb7cdb45c09da8c4b13715459f884a05bb882
 
 hook="${HOOK_REPO:-}"
 if [[ -z "$hook" ]]; then

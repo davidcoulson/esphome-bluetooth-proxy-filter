@@ -326,13 +326,10 @@ class BluetoothProxy final : public Component {
   /// weak for the floor".
   uint32_t get_adv_dropped_gate() const { return this->adv_dropped_gate_; }
 
-  /// Concatenated 32-hex-char IRKs, parsed once in setup(). When the list is
-  /// empty no IRK gating happens at all (upstream behaviour).
-  void set_irks_hex(const char *hex) {
-    this->irks_hex_ = hex;
-    this->clear_rpa_cache_();
-    this->recompute_gate_();
-  }
+  /// Replace the IRK list with concatenated 32-hex-char keys, parsed on the
+  /// spot (so it works at any time). When the list is empty no IRK gating
+  /// happens at all (upstream behaviour).
+  void set_irks_hex(const char *hex);
   /// Replace the IRK list at runtime - typically from a Home Assistant entity,
   /// so a new phone does not mean reflashing every proxy.
   ///
@@ -465,10 +462,7 @@ class BluetoothProxy final : public Component {
   /// does - allow_espressif does NOT exempt it, despite what this header used
   /// to claim. Allowlisting the UUID is what actually makes provisioning work
   /// on a far-away board.
-  void add_allowed_service_uuid128(const char *hex) {
-    this->service_uuid128_hex_.push_back(hex);
-    this->recompute_gate_();
-  }
+  void add_allowed_service_uuid128(const char *hex);
 
   uint32_t get_legacy_version() const {
     if (!this->active_) {
@@ -647,13 +641,11 @@ class BluetoothProxy final : public Component {
   uint32_t adv_dropped_floor_{0};
   uint32_t adv_dropped_gate_{0};
 
-  // Identity Resolving Keys. irks_hex_ is the compile-time blob; it is parsed
-  // into irks_ during setup() and then dropped.
-  const char *irks_hex_{nullptr};
+  // Identity Resolving Keys.
   std::vector<std::array<uint8_t, 16>> irks_;
   // Each slot is a 48-bit address with the verdict in bit 63; 0 is empty (an
   // RPA always has bit 46 set, so a real entry is never 0). Filled round-robin.
-  std::vector<uint64_t> rpa_cache_;
+  std::array<uint64_t, RPA_CACHE_SIZE> rpa_cache_{};
   uint8_t rpa_cache_next_{0};
   uint32_t irk_resolutions_{0};
   // Lowercased substrings; pointers into flash-resident string literals.
@@ -680,7 +672,6 @@ class BluetoothProxy final : public Component {
     }
   };
   std::vector<IBeaconRule> ibeacon_rules_;
-  std::vector<const char *> service_uuid128_hex_;
   std::vector<std::array<uint8_t, 16>> service_uuid128_;
   // Blocked Bluetooth SIG company identifiers (AD type 0xFF).
   std::vector<uint16_t> manufacturer_blocklist_;

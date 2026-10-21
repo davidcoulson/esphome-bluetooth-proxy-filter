@@ -42,6 +42,8 @@ FUNCTIONS = [
     "address_is_rpa_",
     "address_is_non_resolvable_",
     "set_irks",
+    "set_irks_hex",
+    "add_allowed_service_uuid128",
     "recompute_gate_",
     "irk_matches_",
     "irk_matches_cached_",

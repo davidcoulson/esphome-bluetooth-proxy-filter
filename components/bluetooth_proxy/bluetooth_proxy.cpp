@@ -106,7 +106,11 @@ bool BluetoothProxy::findmy_match_(const uint8_t *data, uint16_t len) const {
       break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
       const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
-      if (company == 0x004C && (data[i + 4] == 0x12 || data[i + 4] == 0x07))
+      // Apple continuity messages are TLV: subtype, length L, L bytes. A frame
+      // that is cut short (or declares less than 2 bytes) is not an advert a
+      // tracker could have sent.
+      if (company == 0x004C && (data[i + 4] == 0x12 || data[i + 4] == 0x07) && field_len >= 6 &&
+          data[i + 5] >= 2 && field_len >= 5u + data[i + 5])
         return true;
     }
     i += field_len + 1;
@@ -436,10 +440,9 @@ void BluetoothProxy::recompute_gate_() {
   };
   if (!this->mac_allowlist_.empty())
     loosen(floored(this->rssi_mac_allowlist_));
-  // irks_hex_ is the compile-time list before setup() has parsed it.
-  if (!this->irks_.empty() || this->irks_hex_ != nullptr)
+  if (!this->irks_.empty())
     loosen(floored(bound(this->rssi_irk_, this->rssi_threshold_)));
-  if (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty() || !this->service_uuid128_hex_.empty())
+  if (!this->service_uuid_allowlist_.empty() || !this->service_uuid128_.empty())
     loosen(floored(bound(this->rssi_service_uuid_, this->rssi_threshold_)));
   // A rule with its own RSSI overrides the floor as well, so it is NOT floored.
   if (this->allow_ibeacon_ && this->ibeacon_any_rssi_ != IBEACON_RSSI_INHERIT)
@@ -477,8 +480,6 @@ bool BluetoothProxy::irk_matches_cached_(uint64_t addr) {
   // AES key schedule and block per loaded key - the whole cost of IRK gating.
   constexpr uint64_t ADDR_MASK = 0xFFFFFFFFFFFFULL;
   constexpr uint64_t OURS = 1ULL << 63;
-  if (this->rpa_cache_.empty())
-    this->rpa_cache_.assign(RPA_CACHE_SIZE, 0);
   for (const uint64_t entry : this->rpa_cache_) {
     if (entry != 0 && (entry & ADDR_MASK) == addr)
       return (entry & OURS) != 0;
@@ -542,51 +543,45 @@ void BluetoothProxy::send_polled_scanner_state_() {
 }
 #endif  // USE_BLE_SCANNER_STATE_CALLBACK
 
+void BluetoothProxy::set_irks_hex(const char *hex) {
+  // Concatenated 32-hex-char keys, unpacked once so the advertisement path only
+  // ever touches the parsed vector.
+  this->irks_.clear();
+  const size_t len = strlen(hex);
+  this->irks_.reserve(len / 32);
+  for (size_t i = 0; i + 32 <= len; i += 32) {
+    std::array<uint8_t, 16> irk{};
+    // Validation already guaranteed 32 hex chars per key; skip anything that
+    // somehow fails to parse rather than installing a half-filled key.
+    if (parse_hex(hex + i, 32, irk.data(), 16) == 32)
+      this->irks_.push_back(irk);
+  }
+  this->clear_rpa_cache_();
+  this->recompute_gate_();
+}
+
+void BluetoothProxy::add_allowed_service_uuid128(const char *hex) {
+  std::array<uint8_t, 16> uuid{};
+  // Validation already guaranteed 32 hex chars; skip anything that somehow
+  // fails to parse rather than installing a half-filled UUID.
+  if (strlen(hex) != 32 || parse_hex(hex, 32, uuid.data(), 16) != 32)
+    return;
+  // 0000xxxx-0000-1000-8000-00805f9b34fb is the 16-bit UUID xxxx written
+  // out in full. Devices advertise the short form, so match that too -
+  // the reverse (short configured, long advertised) already works in
+  // uuid128_matches_().
+  if (memcmp(uuid.data(), BT_BASE_UUID, 2) == 0 && memcmp(uuid.data() + 4, BT_BASE_UUID + 4, 12) == 0) {
+    this->service_uuid_allowlist_.push_back(static_cast<uint16_t>((uuid[2] << 8) | uuid[3]));
+  }
+  this->service_uuid128_.push_back(uuid);
+  this->recompute_gate_();
+}
+
 void BluetoothProxy::setup() {
 #ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   this->connections_free_response_.limit = BLUETOOTH_PROXY_MAX_CONNECTIONS;
   this->connections_free_response_.free = BLUETOOTH_PROXY_MAX_CONNECTIONS;
 #endif
-
-  // Unpack the compile-time IRK blob (concatenated 32-hex-char keys) once, so
-  // the advertisement path only ever touches the parsed vector.
-  if (this->irks_hex_ != nullptr) {
-    const size_t len = strlen(this->irks_hex_);
-    this->irks_.reserve(len / 32);
-    for (size_t i = 0; i + 32 <= len; i += 32) {
-      std::array<uint8_t, 16> irk{};
-      // Validation already guaranteed 32 hex chars per key; skip anything that
-      // somehow fails to parse rather than installing a half-filled key.
-      if (parse_hex(this->irks_hex_ + i, 32, irk.data(), 16) == 32)
-        this->irks_.push_back(irk);
-    }
-    this->irks_hex_ = nullptr;
-    this->clear_rpa_cache_();
-    ESP_LOGCONFIG(TAG, "Loaded %u IRK(s); unmatched RPAs will be dropped", static_cast<unsigned>(this->irks_.size()));
-  }
-
-  // Same pattern as the IRK blob: parse the compile-time hex once, then drop it
-  // so the advertisement path only ever touches the parsed vector.
-  if (!this->service_uuid128_hex_.empty()) {
-    this->service_uuid128_.reserve(this->service_uuid128_hex_.size());
-    for (const char *hex : this->service_uuid128_hex_) {
-      std::array<uint8_t, 16> uuid{};
-      // Validation already guaranteed 32 hex chars; skip anything that somehow
-      // fails to parse rather than installing a half-filled UUID.
-      if (parse_hex(hex, 32, uuid.data(), 16) != 32)
-        continue;
-      // 0000xxxx-0000-1000-8000-00805f9b34fb is the 16-bit UUID xxxx written
-      // out in full. Devices advertise the short form, so match that too -
-      // the reverse (short configured, long advertised) already works in
-      // uuid128_matches_().
-      if (memcmp(uuid.data(), BT_BASE_UUID, 2) == 0 && memcmp(uuid.data() + 4, BT_BASE_UUID + 4, 12) == 0) {
-        this->service_uuid_allowlist_.push_back(static_cast<uint16_t>((uuid[2] << 8) | uuid[3]));
-      }
-      this->service_uuid128_.push_back(uuid);
-    }
-    this->service_uuid128_hex_.clear();
-    this->service_uuid128_hex_.shrink_to_fit();
-  }
 
   this->recompute_gate_();
 
@@ -882,9 +877,11 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   adv.address = raw.address;
   adv.rssi = raw.rssi;
   adv.address_type = raw.addr_type;
-  uint8_t length = raw.data_len > sizeof(adv.data) ? sizeof(adv.data) : static_cast<uint8_t>(raw.data_len);
+  // A null payload counts as empty everywhere above; copy it as empty too.
+  uint8_t length = data_len > sizeof(adv.data) ? sizeof(adv.data) : static_cast<uint8_t>(data_len);
   adv.data_len = length;
-  std::memcpy(adv.data, raw.data, length);
+  if (length != 0)
+    std::memcpy(adv.data, raw.data, length);
 
   this->response_.advertisements_len++;
 
@@ -1103,15 +1100,15 @@ void BluetoothProxy::bluetooth_device_request(const api::BluetoothDeviceRequest 
   switch (msg.request_type) {
     case api::enums::BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITH_CACHE:
     case api::enums::BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITHOUT_CACHE: {
-      auto *connection = this->get_connection_(msg.address, true);
-      if (connection == nullptr) {
-        ESP_LOGW(TAG, "No free connections available");
+      // Checked before get_connection_(), which reserves a slot; rejecting afterwards leaked it.
+      if (!msg.has_address_type) {
+        ESP_LOGE(TAG, "Missing address type in connect request for %012" PRIX64, msg.address);
         this->answer_device_disconnected_(msg.address);
         return;
       }
-      if (!msg.has_address_type) {
-        ESP_LOGE(TAG, "[%d] [%s] Missing address type in connect request", connection->get_connection_index(),
-                 connection->address_str());
+      auto *connection = this->get_connection_(msg.address, true);
+      if (connection == nullptr) {
+        ESP_LOGW(TAG, "No free connections available");
         this->answer_device_disconnected_(msg.address);
         return;
       }

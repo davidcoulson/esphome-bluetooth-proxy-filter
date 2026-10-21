@@ -149,6 +149,13 @@ text_sensor:
     internal: true
     on_value:
       - lambda: 'id(ble_proxy).set_irks(x);'
+
+# ESPHome logs every attribute it receives at DEBUG, keys included, and
+# `internal: true` does not stop that line.
+logger:
+  logs:
+    homeassistant.text_sensor: WARN
+    text_sensor: WARN
 ```
 
 The parser takes every run of **exactly 32 hex characters** and ignores the
