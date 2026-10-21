@@ -64,8 +64,9 @@ unless configured.**
 > `drop_non_resolvable`, `manufacturer_blocklist` and `mac_allowlist` filters. Treat the source as
 > authoritative; `on_raw_advertisement_()` has the filter chain in order.
 
-Service UUIDs that bypass **every** filter, including the address-type tests and the RSSI
-threshold. Accepts 16-bit shorts and full 128-bit UUIDs:
+Service UUIDs that bypass the address-type tests and the blocklists (except `mac_blocklist`).
+They still have an RSSI limit: `rssi_service_uuid`, or `rssi_threshold` without it, and always
+`rssi_floor`. Accepts 16-bit shorts and full 128-bit UUIDs:
 
 ```yaml
 bluetooth_proxy:
@@ -98,9 +99,9 @@ anything can identify it — and its address is not knowable in advance, so no M
 allowlisted. Matching on the service UUID is the only handle that exists at that point.
 
 **Placement.** The check runs after `mac_allowlist` and **before** the RSSI test, so a pairing device
-is forwarded no matter how weakly it is heard. That is deliberate: a pairing window is short and
-user-initiated, so a missed advertisement costs a retry while the extra traffic lasts only as long
-as the pairing does.
+gets its own limit, `rssi_service_uuid`, instead of the general threshold. Set it loose: a pairing
+window is short and user-initiated, so a missed advertisement costs a retry while the extra
+traffic lasts only as long as the pairing does. `rssi_floor` still applies.
 
 **Cost.** It walks the advertisement payload, which the other filters defer to last. Guarded on a
 non-empty list, so a build that does not set the option keeps the original ordering and pays

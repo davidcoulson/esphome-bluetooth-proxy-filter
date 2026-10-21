@@ -12,8 +12,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: davidcoulson/esphome-ble-advert-filter
-          # This fork's filter matches esphome-ble-advert-filter v2.0.2. Its
+          # This fork's filter matches esphome-ble-advert-filter v2.0.3. Its
           # sensor/number platforms and actions exist only there.
-          ref: v2.0.2
+          ref: v2.0.3
           path: hook
       - run: HOOK_REPO=hook tests/run.sh

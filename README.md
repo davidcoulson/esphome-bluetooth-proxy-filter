@@ -9,8 +9,8 @@
 > every release. Same options, same methods; moving is mechanical, see its
 > [migration guide](https://github.com/davidcoulson/esphome-ble-advert-filter/blob/main/docs/migrating.md).
 >
-> This fork stays for ESPHome 2026.9 and earlier. Its v1.8.0 filter matches
-> esphome-ble-advert-filter v2.0.2 (fixes and the RPA verdict cache are ported here;
+> This fork stays for ESPHome 2026.9 and earlier. Its v1.8.1 filter matches
+> esphome-ble-advert-filter v2.0.3 (fixes and the RPA verdict cache are ported here;
 > `tools/check_parity.py` checks it). The sensor and number platforms and the
 > `set_irks`/`clear_irks` actions exist only in esphome-ble-advert-filter.
 
@@ -30,8 +30,8 @@ exactly like upstream.
 | --- | --- |
 | `rssi_threshold` | RSSI limit for everything not matched by a protection category (default `-127` = forward everything) |
 | `irks` | Drop Resolvable Private Addresses that resolve to none of the listed Identity Resolving Keys — i.e. other people's phones and watches |
-| `mac_allowlist` | Always forward these addresses, bypassing the per-category RSSI limits below |
-| `rssi_floor` | Absolute reception limit applied to **every** advertisement, allowlisted ones included, before anything is categorised (default `-127` = off) |
+| `mac_allowlist` | Always forward these addresses, whatever else is blocked (except `mac_blocklist`). Only `rssi_mac_allowlist` and `rssi_floor` bound them |
+| `rssi_floor` | Absolute reception limit for every category, allowlisted ones included, except an `allow_ibeacon` or `allow_findmy` rule that sets its own `rssi` (default `-127` = off) |
 | `rssi_mac_allowlist` | RSSI limit for `mac_allowlist` hits (default `-127` = bounded only by `rssi_floor`) |
 | `rssi_irk` | RSSI limit for IRK-matched devices (default `-127` = inherit `rssi_threshold`) |
 | `rssi_service_uuid` | RSSI limit for `service_uuid_allowlist` hits (default `-127` = inherit `rssi_threshold`) |

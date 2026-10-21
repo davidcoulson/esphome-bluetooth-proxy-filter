@@ -167,17 +167,13 @@ bool BluetoothProxy::ibeacon_match_(const uint8_t *data, uint16_t len, int8_t *l
       break;
     if (data[i + 1] == 0xFF && field_len >= 4) {
       const uint16_t company = static_cast<uint16_t>(data[i + 2]) | (static_cast<uint16_t>(data[i + 3]) << 8);
-      if (company == 0x004C && data[i + 4] == 0x02) {
+      // Only a complete iBeacon (subtype 0x02, length 0x15) counts: a truncated
+      // or malformed one would otherwise buy Apple data the blocklist exemption.
+      // A later one in the same payload (e.g. in the scan response) still can.
+      if (company == 0x004C && field_len >= 26 && data[i + 4] == 0x02 && data[i + 5] == 0x15) {
         if (this->allow_ibeacon_) {
           *limit_out = this->ibeacon_any_rssi_;
           return true;
-        }
-        // Only a complete iBeacon carries uuid/major/minor, so a truncated one
-        // cannot be matched against a rule - but a later one in the same
-        // payload (e.g. in the scan response) still can.
-        if (field_len < 26) {
-          i += field_len + 1;
-          continue;
         }
         const uint8_t *uuid = &data[i + 6];
         const uint16_t major = (static_cast<uint16_t>(data[i + 22]) << 8) | data[i + 23];
@@ -783,7 +779,6 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
       this->payload_has_allowed_service_uuid_(data, data_len)) {
     category = CAT_UUID;
     protected_addr = true;
-    this->adv_allowed_service_uuid_++;
   }
 
   // An RPA that resolved to none of our IRKs and that no other allow rule
@@ -880,6 +875,8 @@ void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertiseme
   this->adv_forwarded_++;
   if (category == CAT_IRK)
     this->adv_forwarded_irk_++;
+  if (category == CAT_UUID)
+    this->adv_allowed_service_uuid_++;
 
   auto &adv = this->response_.advertisements[this->response_.advertisements_len];
   adv.address = raw.address;
