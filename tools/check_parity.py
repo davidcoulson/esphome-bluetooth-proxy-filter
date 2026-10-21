@@ -49,7 +49,7 @@ FUNCTIONS = [
 ]
 
 CHAIN_START = "  // 1. Ignored outright"
-CHAIN_END = "    this->adv_forwarded_irk_++;\n"
+CHAIN_END = "    this->adv_allowed_service_uuid_++;\n"
 
 
 def normalise(text: str) -> str:
